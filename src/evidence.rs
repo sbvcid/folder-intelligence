@@ -17,7 +17,7 @@ pub struct DirectoryEvidence {
     pub file_count: u64,
     /// Number of subdirectories directly in this directory
     pub directory_count: u64,
-    /// Total size of all files in this directory (recursive) in bytes
+    /// Total size of direct files in this directory in bytes (not recursive)
     pub total_size: u64,
     /// Histogram of file extensions (lowercase, without dot)
     pub extension_histogram: HashMap<String, u64>,

@@ -93,13 +93,13 @@ impl Cli {
             Commands::Inspect { path, output } => {
                 let limits = ScanLimits::default();
                 let scanner = Scanner::with_limits(&path, limits);
-                let result = scanner.scan()?;
+                let result = scanner.inspect_single()?;
 
-                let evidence = result.evidence.iter().find(|e| e.path == path);
-                match evidence {
-                    Some(e) => write_jsonl(&[e.clone()], output)?,
-                    None => return Err(anyhow!("No evidence found for path: {}", path.display())),
+                if result.evidence.is_empty() {
+                    return Err(anyhow!("No evidence found for path: {}", path.display()));
                 }
+
+                write_jsonl(&result.evidence, output)?;
             }
             Commands::Schema { output } => {
                 let schema = include_str!("../schemas/directory-evidence.json");

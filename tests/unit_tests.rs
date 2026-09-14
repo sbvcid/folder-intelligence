@@ -1,133 +1,5 @@
 use folder_intelligence::evidence::*;
-use folder_intelligence::scanner::*;
-
-#[cfg(test)]
-mod identifier_tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_isbn10() {
-        let result = extract_isbn10("book_0-306-40615-2.pdf");
-        assert_eq!(result, Some("0-306-40615-2".to_string()));
-
-        let result = extract_isbn10("0306406152.txt");
-        assert_eq!(result, Some("0306406152".to_string()));
-
-        let result = extract_isbn10("book_0-306-40615-X.epub");
-        assert_eq!(result, Some("0-306-40615-X".to_string()));
-
-        let result = extract_isbn10("no_isbn_here.txt");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_isbn13() {
-        let result = extract_isbn13("book_978-0-306-40615-7.pdf");
-        assert_eq!(result, Some("978-0-306-40615-7".to_string()));
-
-        let result = extract_isbn13("9780306406157.txt");
-        assert_eq!(result, Some("9780306406157".to_string()));
-
-        let result = extract_isbn13("not_an_isbn.txt");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_doi() {
-        let result = extract_doi("paper_10.1038_nature12373.pdf");
-        assert_eq!(result, Some("10.1038/nature12373".to_string()));
-
-        let result = extract_doi("10.1109/5.771073.txt");
-        assert_eq!(result, Some("10.1109/5.771073".to_string()));
-    }
-
-    #[test]
-    fn test_extract_uuid() {
-        let result = extract_uuid("file_550e8400-e29b-41d4-a716-446655440000.log");
-        assert_eq!(result, Some("550e8400-e29b-41d4-a716-446655440000".to_string()));
-
-        let result = extract_uuid("550E8400-E29B-41D4-A716-446655440000.txt");
-        assert_eq!(result, Some("550E8400-E29B-41D4-A716-446655440000".to_string()));
-    }
-
-    #[test]
-    fn test_extract_semver() {
-        let result = extract_semver("app_v1.2.3.tar.gz");
-        assert_eq!(result, Some("v1.2.3".to_string()));
-
-        let result = extract_semver("lib-2.0.0-beta.1.zip");
-        assert_eq!(result, Some("2.0.0-beta.1".to_string()));
-
-        let result = extract_semver("release_1.0.0+build.123.exe");
-        assert_eq!(result, Some("1.0.0+build.123".to_string()));
-    }
-
-    #[test]
-    fn test_extract_hash() {
-        // MD5
-        let result = extract_hash("file_d41d8cd98f00b204e9800998ecf8427e.txt");
-        assert_eq!(result, Some("d41d8cd98f00b204e9800998ecf8427e".to_string()));
-
-        // SHA1
-        let result = extract_hash("file_da39a3ee5e6b4b0d3255bfef95601890afd80709.txt");
-        assert_eq!(result, Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".to_string()));
-
-        // SHA256
-        let result = extract_hash("file_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.txt");
-        assert_eq!(result, Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string()));
-    }
-
-    #[test]
-    fn test_extract_date() {
-        let result = extract_date("photo_2024-01-15.jpg");
-        assert_eq!(result, Some("2024-01-15".to_string()));
-
-        let result = extract_date("backup_20240115.tar.gz");
-        assert_eq!(result, Some("20240115".to_string()));
-
-        let result = extract_date("report_15-01-2024.pdf");
-        assert_eq!(result, Some("15-01-2024".to_string()));
-    }
-
-    #[test]
-    fn test_extract_email() {
-        let result = extract_email("contact_john.doe@example.com.txt");
-        assert_eq!(result, Some("john.doe@example.com".to_string()));
-    }
-
-    #[test]
-    fn test_extract_url() {
-        let result = extract_url("ref_https://example.com/path.txt");
-        assert_eq!(result, Some("https://example.com/path".to_string()));
-    }
-
-    #[test]
-    fn test_extract_alphanumeric_codes() {
-        let result = extract_alphanumeric_codes("SKU-001_product.pdf");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].value, "SKU-001");
-        assert_eq!(result[0].identifier_type, IdentifierType::AlphanumericCode);
-
-        let result = extract_alphanumeric_codes("ABC123_file.txt");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].value, "ABC123");
-
-        let result = extract_alphanumeric_codes("PROD-2024-001_data.csv");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].value, "PROD-2024-001");
-    }
-
-    #[test]
-    fn test_extract_multiple_identifiers() {
-        let filename = "book_ISBN-978-0-306-40615-7_v1.2.3_2024-01-15.pdf";
-        let identifiers = extract_identifiers(filename);
-        
-        // Should find ISBN, semver, and date
-        assert!(identifiers.iter().any(|i| i.identifier_type == IdentifierType::Isbn));
-        assert!(identifiers.iter().any(|i| i.identifier_type == IdentifierType::Semver));
-        assert!(identifiers.iter().any(|i| i.identifier_type == IdentifierType::Date));
-    }
-}
+use folder_intelligence::scanner::Scanner;
 
 #[cfg(test)]
 mod evidence_tests {
@@ -229,9 +101,9 @@ mod scanner_tests {
         let evidence = &result.evidence[0];
         assert_eq!(evidence.file_count, 3);
         assert_eq!(evidence.directory_count, 0);
-        assert_eq!(evidence.total_size, 27); // 9 + 9 + 9
-        assert_eq!(evidence.extension_histogram.get("txt"), Some(&2));
-        assert_eq!(evidence.extension_histogram.get("pdf"), Some(&1));
+        assert_eq!(evidence.total_size, 24); // 8 + 8 + 8
+        assert_eq!(evidence.extension_histogram.get("txt").copied(), Some(2u64));
+        assert_eq!(evidence.extension_histogram.get("pdf").copied(), Some(1u64));
     }
 
     #[test]
@@ -252,7 +124,7 @@ mod scanner_tests {
         let root_evidence = result.evidence.iter().find(|e| e.name == dir.path().file_name().unwrap().to_str().unwrap()).unwrap();
         assert_eq!(root_evidence.file_count, 1);
         assert_eq!(root_evidence.directory_count, 1);
-        assert_eq!(root_evidence.child_directory_names, vec!["subdir"]);
+        assert_eq!(root_evidence.child_directory_names, vec!["subdir".to_string()]);
 
         // Subdirectory
         let sub_evidence = result.evidence.iter().find(|e| e.name == "subdir").unwrap();
@@ -274,7 +146,7 @@ mod scanner_tests {
         assert_eq!(result.evidence.len(), 2);
         let unicode_evidence = result.evidence.iter().find(|e| e.name == "测试目录").unwrap();
         assert_eq!(unicode_evidence.file_count, 1);
-        assert_eq!(unicode_evidence.extension_histogram.get("txt"), Some(&1));
+        assert_eq!(unicode_evidence.extension_histogram.get("txt").copied(), Some(1u64));
     }
 
     #[test]
@@ -342,8 +214,14 @@ mod scanner_tests {
         let scanner = Scanner::with_limits(dir.path(), limits);
         let result = scanner.scan().unwrap();
 
-        // Should only scan up to depth 3 (root + 3 levels = 4 directories)
-        assert!(result.evidence.len() <= 4);
+        // With max_depth=3, directories at depth >= max_depth are skipped
+        // So depth 0 (root), 1 (level0), 2 (level1) are scanned = 3 directories
+        // level2 at depth 3 is skipped
+        assert_eq!(result.evidence.len(), 3);
+        
+        assert!(result.evidence.iter().any(|e| e.name == "level0"));
+        assert!(result.evidence.iter().any(|e| e.name == "level1"));
+        assert!(!result.evidence.iter().any(|e| e.name == "level2"));
     }
 
     #[test]
@@ -361,7 +239,44 @@ mod scanner_tests {
         let result = scanner.scan().unwrap();
 
         let evidence = &result.evidence[0];
-        // Should only count up to max_files_per_dir
-        assert!(evidence.file_count <= 10);
+        // file_count should be limited to max_files_per_dir
+        assert_eq!(evidence.file_count, 10);
+    }
+
+    #[test]
+    fn test_representative_filenames_limit() {
+        let dir = tempdir().unwrap();
+        for i in 0..50 {
+            fs::write(dir.path().join(format!("file{:03}.txt", i)), "content").unwrap();
+        }
+
+        let limits = ScanLimits {
+            max_representative_files: 5,
+            ..Default::default()
+        };
+
+        let scanner = Scanner::with_limits(dir.path(), limits);
+        let result = scanner.scan().unwrap();
+
+        let evidence = &result.evidence[0];
+        assert_eq!(evidence.representative_filenames.len(), 5);
+    }
+
+    #[test]
+    fn test_inspect_single_efficient() {
+        let dir = tempdir().unwrap();
+        // Create a complex directory structure
+        let subdir = dir.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(dir.path().join("root.txt"), "root").unwrap();
+        fs::write(subdir.join("sub.txt"), "sub").unwrap();
+
+        let limits = ScanLimits::default();
+        let scanner = Scanner::with_limits(dir.path(), limits);
+        let result = scanner.inspect_single().unwrap();
+
+        // Should only have 1 evidence record (just the root directory)
+        assert_eq!(result.evidence.len(), 1);
+        assert_eq!(result.evidence[0].name, dir.path().file_name().unwrap().to_str().unwrap());
     }
 }

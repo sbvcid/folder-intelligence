@@ -42,10 +42,10 @@
       "minimum": 0,
       "description": "Number of subdirectories directly in this directory"
     },
-    "total_size": {
+      "total_size": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total size of all files in this directory (recursive) in bytes"
+      "description": "Total size of direct files in this directory in bytes (not recursive)"
     },
     "extension_histogram": {
       "type": "object",

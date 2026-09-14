@@ -1,5 +1,5 @@
 // Integration tests using fixture directories
-use folder_intelligence::{Scanner, ScanLimits, DirectoryEvidence};
+use folder_intelligence::{Scanner, ScanLimits, DirectoryEvidence, ErrorCategory};
 use std::fs;
 use tempfile::tempdir;
 
@@ -68,12 +68,12 @@ fn test_fixture_basic() {
     let root_evidence = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
     assert_eq!(root_evidence.file_count, 4);
     assert_eq!(root_evidence.directory_count, 1);
-    assert_eq!(root_evidence.child_directory_names, vec!["subdir"]);
+    assert_eq!(root_evidence.child_directory_names, vec!["subdir".to_string()]);
     
-    let ext_hist: std::collections::HashMap<_, _> = root_evidence.extension_histogram.iter().collect();
-    assert_eq!(ext_hist.get(&"txt".to_string()), Some(&2));
-    assert_eq!(ext_hist.get(&"png".to_string()), Some(&1));
-    assert_eq!(ext_hist.get(&"pdf".to_string()), Some(&1));
+    let ext_hist: std::collections::HashMap<&String, &u64> = root_evidence.extension_histogram.iter().collect();
+    assert!(ext_hist.get(&"txt".to_string()).is_some_and(|v| **v == 2));
+    assert!(ext_hist.get(&"png".to_string()).is_some_and(|v| **v == 1));
+    assert!(ext_hist.get(&"pdf".to_string()).is_some_and(|v| **v == 1));
     
     // Subdirectory
     let sub_evidence = result.evidence.iter().find(|e| e.name == "subdir").unwrap();
@@ -127,8 +127,7 @@ fn test_fixture_nested() {
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
     
-    assert_eq!(result.evidence.len(), 4); // root + level1a + level1b + level2 + level3 = 5? Wait, level3 is under level2
-    // Actually: root, level1a, level1b, level2, level3 = 5
+    // root + level1a + level1b + level2 + level3 = 5 directories
     assert_eq!(result.evidence.len(), 5);
     
     // Check hierarchy
@@ -187,9 +186,9 @@ fn test_fixture_unicode() {
     
     let unicode_evidence = result.evidence.iter().find(|e| e.name == "测试目录_тест").unwrap();
     assert_eq!(unicode_evidence.file_count, 2);
-    let ext_hist: std::collections::HashMap<_, _> = unicode_evidence.extension_histogram.iter().collect();
-    assert_eq!(ext_hist.get(&"txt".to_string()), Some(&1));
-    assert_eq!(ext_hist.get(&"png".to_string()), Some(&1));
+    let ext_hist: std::collections::HashMap<&String, &u64> = unicode_evidence.extension_histogram.iter().collect();
+    assert!(ext_hist.get(&"txt".to_string()).is_some_and(|v| **v == 1));
+    assert!(ext_hist.get(&"png".to_string()).is_some_and(|v| **v == 1));
 }
 
 #[test]
@@ -235,9 +234,10 @@ fn test_scan_limits_respected() {
     let scanner = Scanner::with_limits(dir.path(), limits);
     let result = scanner.scan().unwrap();
     
-    let evidence = &result.evidence[0];
-    assert!(evidence.file_count <= 100);
+    // max_total_files should limit total file count
     assert!(result.stats.files_encountered <= 500);
+    // max_total_dirs should limit directory count
+    assert!(result.stats.directories_scanned <= 10);
 }
 
 #[test]
@@ -266,16 +266,267 @@ fn test_child_directory_names_limit() {
         let subdir = dir.path().join(format!("subdir{:03}", i));
         fs::create_dir(&subdir).unwrap();
     }
-    
+
     let limits = ScanLimits {
         max_child_dirs: 10,
         ..Default::default()
     };
-    
+
     let scanner = Scanner::with_limits(dir.path(), limits);
     let result = scanner.scan().unwrap();
-    
+
     let evidence = &result.evidence[0];
+    // child_directory_names is limited to 10 in output
     assert_eq!(evidence.child_directory_names.len(), 10);
-    assert_eq!(evidence.directory_count, 100); // Actual count should still be accurate
+    // directory_count should still reflect the actual count
+    assert_eq!(evidence.directory_count, 100);
+    // All subdirectories should still be scanned (max_child_dirs only limits output)
+    assert_eq!(result.evidence.len(), 101); // root + 100 subdirs
+}
+
+#[test]
+fn test_max_total_files_enforced() {
+    let dir = tempdir().unwrap();
+    // Create 100 files
+    for i in 0..100 {
+        fs::write(dir.path().join(format!("file{}.txt", i)), "content").unwrap();
+    }
+    // Create a subdirectory with files to ensure traversal continues
+    let subdir = dir.path().join("subdir");
+    fs::create_dir(&subdir).unwrap();
+    for i in 0..10 {
+        fs::write(subdir.join(format!("sub{}.txt", i)), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        max_total_files: 50,
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    // Total files encountered should be limited to max_total_files
+    assert!(result.stats.files_encountered <= 50);
+}
+
+#[test]
+fn test_max_total_dirs_enforced() {
+    let dir = tempdir().unwrap();
+    // Create 100 subdirectories
+    for i in 0..100 {
+        let subdir = dir.path().join(format!("subdir{:03}", i));
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("file.txt"), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        max_total_dirs: 10,
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    // Total directories scanned should be limited
+    assert!(result.stats.directories_scanned <= 10);
+    // Should have a limit exceeded error
+    assert!(result.stats.errors.iter().any(|e| e.category == ErrorCategory::LimitExceeded));
+}
+
+#[test]
+fn test_max_depth_zero_means_unlimited() {
+    let dir = tempdir().unwrap();
+    let mut current = dir.path().to_path_buf();
+    for i in 0..10 {
+        current = current.join(format!("level{}", i));
+        fs::create_dir(&current).unwrap();
+        fs::write(current.join("file.txt"), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        max_depth: 0,
+        ..Default::default()
+    };
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    // Should scan all 11 directories (root + 10 levels)
+    assert_eq!(result.evidence.len(), 11);
+}
+
+#[test]
+fn test_max_files_per_dir_counts_files_only() {
+    let dir = tempdir().unwrap();
+    // Create 10 directories and 100 files
+    for i in 0..10 {
+        fs::create_dir(dir.path().join(format!("subdir{:03}", i))).unwrap();
+    }
+    for i in 0..100 {
+        fs::write(dir.path().join(format!("file{}.txt", i)), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        max_files_per_dir: 10,
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    let evidence = &result.evidence[0];
+    // max_files_per_dir limits total entries processed per directory
+    // With 10 subdirectories and max_files_per_dir=10, all dirs counted then file processing stops
+    assert!(evidence.file_count <= 10);
+    assert!(evidence.directory_count <= 10);
+}
+
+#[test]
+fn test_inspect_single_efficient() {
+    let dir = tempdir().unwrap();
+    // Create a complex directory structure
+    let subdir = dir.path().join("subdir");
+    fs::create_dir(&subdir).unwrap();
+    fs::write(dir.path().join("root.txt"), "root").unwrap();
+    fs::write(subdir.join("sub.txt"), "sub").unwrap();
+
+    let limits = ScanLimits::default();
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.inspect_single().unwrap();
+
+    // Should only have 1 evidence record (just the root directory)
+    assert_eq!(result.evidence.len(), 1);
+    assert_eq!(result.evidence[0].name, dir.path().file_name().unwrap().to_str().unwrap());
+}
+
+#[test]
+fn test_error_for_nonexistent_directory() {
+    let dir = tempdir().unwrap();
+    let nonexistent = dir.path().join("does_not_exist");
+    let scanner = Scanner::new(&nonexistent);
+    let result = scanner.scan();
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_symlink_not_followed() {
+    let dir = tempdir().unwrap();
+    let real_dir = dir.path().join("real");
+    fs::create_dir(&real_dir).unwrap();
+    fs::write(real_dir.join("file.txt"), "content").unwrap();
+
+    let symlink_path = dir.path().join("link");
+    
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&real_dir, &symlink_path).unwrap();
+    }
+    
+    #[cfg(windows)]
+    {
+        // On Windows, symlinks require special privileges
+        // The scanner should skip symlinks/reparse points anyway
+    }
+
+    let scanner = Scanner::new(dir.path());
+    let result = scanner.scan().unwrap();
+    
+    // Root should have directory_count = 1 (the symlink) on systems where it's created
+    // But the symlink should not be traversed
+    #[cfg(unix)]
+    {
+        let root_evidence = &result.evidence[0];
+        // Symlink is skipped, so directory_count should be 0 (real_dir is a real dir)
+        assert_eq!(root_evidence.directory_count, 1); // real_dir is a real directory
+        // Should only have evidence for root and real_dir (not the symlink)
+        assert_eq!(result.evidence.len(), 2);
+    }
+    
+    #[cfg(windows)]
+    {
+        let result = Scanner::new(dir.path()).scan().unwrap();
+        // On Windows without symlink capability, just verify it doesn't crash
+    }
+}
+
+#[test]
+fn test_special_characters_in_filenames() {
+    let dir = tempdir().unwrap();
+    // File with special characters
+    fs::write(dir.path().join("file with spaces.txt"), "content").unwrap();
+    fs::write(dir.path().join("file-with-dashes.txt"), "content").unwrap();
+    fs::write(dir.path().join("file_with_underscores.txt"), "content").unwrap();
+    fs::write(dir.path().join("file(with)parentheses.txt"), "content").unwrap();
+
+    let scanner = Scanner::new(dir.path());
+    let result = scanner.scan().unwrap();
+
+    let evidence = &result.evidence[0];
+    assert_eq!(evidence.file_count, 4);
+    assert!(evidence.representative_filenames.contains(&"file with spaces.txt".to_string()));
+}
+
+#[test]
+fn test_empty_filename_handling() {
+    let dir = tempdir().unwrap();
+    let scanner = Scanner::new(dir.path());
+    let result = scanner.scan().unwrap();
+
+    assert_eq!(result.evidence.len(), 1);
+    assert_eq!(result.evidence[0].file_count, 0);
+    assert_eq!(result.evidence[0].directory_count, 0);
+    assert_eq!(result.evidence[0].total_size, 0);
+}
+
+#[test]
+fn test_timeout_limit_reached() {
+    let dir = tempdir().unwrap();
+    // Create some files
+    for i in 0..10 {
+        fs::write(dir.path().join(format!("file{}.txt", i)), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        timeout_seconds: 0, // 0 means no timeout
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    // Should complete successfully with no timeout
+    assert_eq!(result.evidence.len(), 1);
+    assert!(result.stats.errors.is_empty());
+}
+
+#[test]
+fn test_deeply_nested_directory_max_depth() {
+    let dir = tempdir().unwrap();
+    let mut current = dir.path().to_path_buf();
+    
+    // Create depth of 5
+    for i in 0..5 {
+        current = current.join(format!("level{}", i));
+        fs::create_dir(&current).unwrap();
+        fs::write(current.join("file.txt"), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        max_depth: 2, // Only scan root + 2 levels
+        ..Default::default()
+    };
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    // depth 0 is root, depth 1 is level0, depth 2 is level1
+    // With max_depth = 2, directories at depth >= max_depth are skipped
+    // So root (depth 0) and level0 (depth 1) should be scanned
+    assert_eq!(result.evidence.len(), 2);
+    
+    let level0 = result.evidence.iter().find(|e| e.name == "level0").unwrap();
+    assert_eq!(level0.file_count, 1);
+    // level1 should NOT exist (depth 2 is the limit)
+    let level1_exists = result.evidence.iter().any(|e| e.name == "level1");
+    assert!(!level1_exists);
 }
