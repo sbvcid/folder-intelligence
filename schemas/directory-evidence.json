@@ -1,0 +1,180 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://folder-intelligence.org/schemas/directory-evidence.json",
+  "title": "Directory Evidence",
+  "description": "Schema for directory evidence collected by folder-intelligence. Evidence represents observed facts about the filesystem without semantic interpretation.",
+  "type": "object",
+  "required": [
+    "path",
+    "name",
+    "file_count",
+    "directory_count",
+    "total_size",
+    "extension_histogram",
+    "child_directory_names",
+    "representative_filenames",
+    "notable_filenames",
+    "potential_identifiers",
+    "text_file_presence",
+    "scanned_at",
+    "scan_duration_ms"
+  ],
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Absolute path of the directory"
+    },
+    "name": {
+      "type": "string",
+      "description": "Name of the directory (last component of path)"
+    },
+    "parent_path": {
+      "type": ["string", "null"],
+      "description": "Parent directory path (null for root)"
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of files directly in this directory"
+    },
+    "directory_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of subdirectories directly in this directory"
+    },
+    "total_size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total size of all files in this directory (recursive) in bytes"
+    },
+    "extension_histogram": {
+      "type": "object",
+      "description": "Histogram of file extensions (lowercase, without dot)",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "child_directory_names": {
+      "type": "array",
+      "description": "Names of immediate child directories",
+      "items": {
+        "type": "string"
+      }
+    },
+    "representative_filenames": {
+      "type": "array",
+      "description": "Representative filenames (sample of files in this directory)",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notable_filenames": {
+      "type": "array",
+      "description": "Common/special filenames observed (README, LICENSE, etc.)",
+      "items": {
+        "type": "string"
+      }
+    },
+    "potential_identifiers": {
+      "type": "array",
+      "description": "Potential identifiers extracted from filenames (no semantic meaning assigned)",
+      "items": {
+        "$ref": "#/$defs/potential_identifier"
+      }
+    },
+    "text_file_presence": {
+      "$ref": "#/$defs/text_file_presence"
+    },
+    "scanned_at": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Scan timestamp (Unix epoch seconds)"
+    },
+    "scan_duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Duration of scan for this directory in milliseconds"
+    }
+  },
+  "$defs": {
+    "potential_identifier": {
+      "type": "object",
+      "required": ["value", "source_filename", "identifier_type"],
+      "properties": {
+        "value": {
+          "type": "string",
+          "description": "The identifier string found"
+        },
+        "source_filename": {
+          "type": "string",
+          "description": "Source filename it was extracted from"
+        },
+        "identifier_type": {
+          "$ref": "#/$defs/identifier_type"
+        }
+      }
+    },
+    "identifier_type": {
+      "type": "string",
+      "enum": [
+        "isbn",
+        "doi",
+        "uuid",
+        "semver",
+        "hash",
+        "date",
+        "alphanumeric_code",
+        "email",
+        "url",
+        "custom"
+      ],
+      "description": "Type of identifier pattern matched"
+    },
+    "text_file_presence": {
+      "type": "object",
+      "required": [
+        "has_readme",
+        "has_nfo",
+        "has_txt",
+        "has_md",
+        "has_license",
+        "has_changelog",
+        "text_files_found"
+      ],
+      "properties": {
+        "has_readme": {
+          "type": "boolean",
+          "description": "Whether a README file exists (any case, any extension)"
+        },
+        "has_nfo": {
+          "type": "boolean",
+          "description": "Whether an NFO file exists"
+        },
+        "has_txt": {
+          "type": "boolean",
+          "description": "Whether any .txt files exist"
+        },
+        "has_md": {
+          "type": "boolean",
+          "description": "Whether any .md files exist"
+        },
+        "has_license": {
+          "type": "boolean",
+          "description": "Whether a LICENSE file exists"
+        },
+        "has_changelog": {
+          "type": "boolean",
+          "description": "Whether a CHANGELOG file exists"
+        },
+        "text_files_found": {
+          "type": "array",
+          "description": "List of text file names found",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
