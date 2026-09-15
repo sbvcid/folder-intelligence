@@ -221,7 +221,7 @@ impl TaskIntentParser {
         if request_lower.contains("desktop") || request_lower.contains("桌面") {
             return Self::expand_special_path("Desktop");
         }
-        if request_lower.contains("documents") || request_lower.contains("documents") {
+        if request_lower.contains("documents") {
             return Self::expand_special_path("Documents");
         }
 
@@ -306,7 +306,9 @@ impl TaskIntentParser {
         let auto_delete = request_lower.contains("delete temp")
             || request_lower.contains("auto-delete")
             || request_lower.contains("刪除暫存")
-            || request_lower.contains("自動刪除");
+            || request_lower.contains("自動刪除")
+            || request_lower.contains("clean up temp")
+            || request_lower.contains("clean temp");
 
         ConstraintSet {
             preserve_existing_folders: preserve,
@@ -384,5 +386,5 @@ enum DetectedGoal {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "intent_tests.rs"]
 mod tests;

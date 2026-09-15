@@ -42,6 +42,11 @@ pub enum Commands {
         scope: Option<PathBuf>,
         output: Option<PathBuf>,
     },
+    Analyze {
+        request: String,
+        scope: Option<PathBuf>,
+        output: Option<PathBuf>,
+    },
 }
 
 impl Cli {
@@ -109,6 +114,14 @@ impl Cli {
                 let scope = args.opt_value_from_os_str("--scope", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 Commands::Intent { request, scope, output }
+            }
+            "analyze" => {
+                let request = args
+                    .free_from_str::<String>()
+                    .map_err(|_| anyhow!("No intent request provided"))?;
+                let scope = args.opt_value_from_os_str("--scope", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::Analyze { request, scope, output }
             }
             _ => return Err(anyhow!("Unknown subcommand: {}", subcommand)),
         };
@@ -247,6 +260,18 @@ impl Cli {
                 };
                 let intent = parser.parse(&request)?;
                 let json_output = serde_json::to_string_pretty(&intent)?;
+                write_output(&json_output, output)?;
+            }
+            Commands::Analyze { request, scope, output } => {
+                let parser = if let Some(s) = scope {
+                    TaskIntentParser::new(s)
+                } else {
+                    TaskIntentParser::default()
+                };
+                let intent = parser.parse(&request)?;
+                let analyzer = crate::agent::EvidenceAnalyzer;
+                let analysis = analyzer.analyze(&intent)?;
+                let json_output = serde_json::to_string_pretty(&analysis)?;
                 write_output(&json_output, output)?;
             }
         }

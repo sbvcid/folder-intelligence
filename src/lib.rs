@@ -20,7 +20,10 @@ pub use classification::{
     build_request, validate_ai_result, RealAiClassifier, MockAiClassifier,
     SAMPLE_CHILD_DIRS, MAX_CANDIDATES,
 };
-pub use agent::{TaskIntent, Goal, ConstraintSet, CleanRule, TaskIntentParser, IntentParseError};
+pub use agent::{
+    TaskIntent, Goal, ConstraintSet, CleanRule, TaskIntentParser, IntentParseError,
+    TaskAnalysis, EvidenceAnalyzer, AnalyzerError,
+};
 
 #[cfg(feature = "network")]
 pub use classification::{OpenAiProvider, OpenAiProviderConfig};

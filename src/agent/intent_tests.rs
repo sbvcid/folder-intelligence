@@ -1,4 +1,7 @@
-use super::*;
+use crate::agent::{Goal, CleanRule, ConstraintSet};
+use crate::agent::intent::TaskIntentParser;
+use crate::agent::intent::IntentParseError;
+use std::path::PathBuf;
 
 #[test]
 fn test_organize_general() {
@@ -213,13 +216,13 @@ fn test_intent_serialization() {
         .expect("should parse");
 
     let json = serde_json::to_string(&intent).expect("should serialize");
-    let deserialized: TaskIntent = serde_json::from_str(&json).expect("should deserialize");
+    let deserialized: crate::agent::TaskIntent = serde_json::from_str(&json).expect("should deserialize");
     assert_eq!(intent, deserialized);
 }
 
 #[test]
 fn test_clean_rule_serialization() {
-    let rule = CleanRule::ArchiveOld(Duration::from_secs(30 * 86400));
+    let rule = CleanRule::ArchiveOld(std::time::Duration::from_secs(30 * 86400));
     let json = serde_json::to_string(&rule).expect("should serialize");
     let deserialized: CleanRule = serde_json::from_str(&json).expect("should deserialize");
     assert_eq!(rule, deserialized);
