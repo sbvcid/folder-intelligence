@@ -32,6 +32,8 @@ pub use agent::{
     ClarificationEngine, ClarificationError,
     FileSystemOperation, OperationPlan, EstimatedImpact,
     ValidationWarning, WarningType, PlanGenerator, PlanError,
+    ValidationStatus, ValidatedOperation, ValidationSummary, ValidationResult,
+    PlanValidator, PlanPreview,
 };
 
 #[cfg(feature = "network")]

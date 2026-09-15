@@ -3,6 +3,7 @@ pub mod analysis;
 pub mod recommendation;
 pub mod clarification;
 pub mod plan;
+pub mod validate;
 
 #[allow(unused_imports)]
 pub use intent::{
@@ -30,4 +31,9 @@ pub use clarification::{
 pub use plan::{
     FileSystemOperation, OperationPlan, EstimatedImpact,
     ValidationWarning, WarningType, PlanGenerator, PlanError,
+};
+#[allow(unused_imports)]
+pub use validate::{
+    ValidationStatus, ValidatedOperation, ValidationSummary, ValidationResult,
+    PlanValidator, PlanPreview,
 };
