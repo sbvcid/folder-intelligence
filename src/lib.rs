@@ -16,6 +16,9 @@ pub use classification::{
     RuleBasedProcessor, ClassificationResult, ClassificationDecision, ConfidenceBand,
     SupportingEvidence, AlternativeCandidate, UncertaintyReason, Warning,
     AiClassifier, AiClassificationConstraints, AiClassificationError, AiClassificationRequest,
-    build_request, validate_ai_result, MockAiClassifier,
+    build_request, validate_ai_result, RealAiClassifier, MockAiClassifier,
     SAMPLE_CHILD_DIRS, MAX_CANDIDATES,
 };
+
+#[cfg(feature = "network")]
+pub use classification::{OpenAiProvider, OpenAiProviderConfig};

@@ -7,6 +7,9 @@ pub mod processor;
 pub mod ai_provider;
 pub mod mock_ai;
 
+#[cfg(feature = "network")]
+pub mod openai_provider;
+
 #[allow(unused_imports)]
 pub use input::{
     TargetEvidence, CandidateEvidence, CandidateSummary, ClassificationConfig, UserHints,
@@ -28,7 +31,11 @@ pub use processor::{ClassificationProcessor, RuleBasedProcessor};
 #[allow(unused_imports)]
 pub use ai_provider::{
     AiClassifier, AiClassificationConstraints, AiClassificationError, AiClassificationRequest,
-    build_request, validate_ai_result,
+    build_request, validate_ai_result, RealAiClassifier,
 };
 #[allow(unused_imports)]
 pub use mock_ai::MockAiClassifier;
+
+#[cfg(feature = "network")]
+#[allow(unused_imports)]
+pub use openai_provider::{OpenAiProvider, OpenAiProviderConfig};

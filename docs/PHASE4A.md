@@ -157,3 +157,109 @@ No provider implementations            PASS
 No MCP                                PASS
 No embeddings                         PASS
 ```
+
+---
+
+## Phase 4B — OpenAI-Compatible Provider Adapter
+
+### Goals
+
+1. First real provider implementation to validate `AiClassifier` abstraction
+2. Prove core types are not polluted with provider-specific fields
+3. Handle AI unreliability (malformed JSON, missing fields, hallucinated candidates)
+4. No filesystem mutation
+
+### Provider Architecture
+
+```text
+Core
+├── AiClassifier (trait)
+├── AiClassificationRequest / Response
+├── ClassificationResult
+└── validate_ai_result()
+
+Providers
+├── openai_provider.rs
+│   ├── OpenAiProvider (implements AiClassifier)
+│   └── OpenAiConfig { base_url, api_key, model, timeout }
+└── (future: anthropic_provider.rs, gemini_provider.rs, etc.)
+```
+
+### Provider Config
+
+```rust
+pub struct OpenAiProviderConfig {
+    pub base_url: String,        // e.g. "https://api.openai.com/v1"
+    pub api_key: String,
+    pub model: String,           // e.g. "gpt-4o"
+    pub timeout: Duration,
+}
+```
+
+### Prompt Structure
+
+The provider sends `AiClassificationRequest` as structured JSON in the user message:
+
+```
+Classify the target directory evidence above against the provided candidates.
+
+Use the rule-based baseline decision as a reference. You may confirm, refine, or override it.
+
+Constraints:
+- max_confidence_delta: 0.2 (your confidence must be within 0.2 of the baseline)
+- allowed_decisions: [move_existing, create_category, leave_unclassified, ask_user]
+- selected_candidate must be an existing candidate path (no hallucinated paths)
+- If you cannot confidently decide, use leave_unclassified or ask_user
+
+Output format: JSON matching ClassificationResult schema.
+```
+
+### Hallucination Prevention
+
+AI must NOT invent candidate paths. The validation enforces:
+
+1. If `selected_candidate` is set → it must match one of the input candidate paths
+2. If `proposed_category_name` is set → it must be a known candidate name or the target name
+3. All `alternatives.candidate_path` must exist in input candidates
+
+### Error Handling
+
+```text
+valid JSON response
+    → validate_ai_result()
+    → ClassificationResult
+
+malformed JSON
+    → AiClassificationError::InvalidResponse
+
+missing required field (deserialization error)
+    → AiClassificationError::InvalidResponse
+
+invalid enum variant
+    → AiClassificationError::InvalidResponse
+
+hallucinated candidate path
+    → AiClassificationError::InvalidResponse
+
+timeout (network)
+    → AiClassificationError::Timeout
+
+401/403
+    → AiClassificationError::Unauthorized
+
+429
+    → AiClassificationError::RateLimited
+
+other 4xx/5xx
+    → AiClassificationError::ProviderError
+```
+
+### What NOT to implement in Phase 4B
+
+- Multiple providers (only OpenAI-compatible in 4B)
+- MCP server/adapter
+- Embeddings or vector database
+- Filesystem mutation
+- Cost/latency tracking
+- Operation log, planning, validation, preview, apply, undo
+- Prompt engineering frameworks beyond structured JSON input

@@ -29,6 +29,8 @@ pub enum Commands {
         target: PathBuf,
         category_root: PathBuf,
         model: String,
+        api_key: Option<String>,
+        base_url: Option<String>,
         output: Option<PathBuf>,
     },
     Schema {
@@ -85,8 +87,10 @@ impl Cli {
                 let target = args.value_from_os_str("--target", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let category_root = args.value_from_os_str("--category-root", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let model = args.opt_value_from_str("--model")?.unwrap_or_else(|| "mock".to_string());
+                let api_key = args.opt_value_from_str("--api-key")?;
+                let base_url = args.opt_value_from_str("--base-url")?;
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
-                Commands::ClassifyAi { target, category_root, model, output }
+                Commands::ClassifyAi { target, category_root, model, api_key, base_url, output }
             }
             "schema" => {
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
@@ -158,7 +162,8 @@ impl Cli {
                 let json_output = serde_json::to_string_pretty(&classification_result)?;
                 write_output(&json_output, output)?;
             }
-            Commands::ClassifyAi { target, category_root, model, output } => {
+            #[cfg_attr(not(feature = "network"), allow(unused_variables))]
+            Commands::ClassifyAi { target, category_root, model, api_key, base_url, output } => {
                 let limits = ScanLimits::default();
 
                 let target_scanner = Scanner::with_limits(&target, limits.clone());
@@ -187,12 +192,31 @@ impl Cli {
                 let baseline = processor.classify(&input)?;
 
                 let ai_classifier = if model == "mock" {
-                    crate::classification::MockAiClassifier::default()
+                    crate::classification::RealAiClassifier::Mock(crate::classification::MockAiClassifier::default())
                 } else {
-                    return Err(anyhow!("Provider '{}' not available in Phase 4A. Use --model mock", model));
+                    #[cfg(feature = "network")]
+                    {
+                        let key = api_key.ok_or_else(|| anyhow!("--api-key is required for model '{}'", model))?;
+                        crate::classification::RealAiClassifier::OpenAi(crate::classification::OpenAiProvider::new(
+                            crate::classification::OpenAiProviderConfig {
+                                base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string()),
+                                api_key: key,
+                                model: model.clone(),
+                                timeout: std::time::Duration::from_secs(60),
+                            },
+                        ))
+                    }
+                    #[cfg(not(feature = "network"))]
+                    {
+                        return Err(anyhow!("Network feature not enabled for provider '{}'. Use --model mock", model));
+                    }
                 };
 
-                let ai_result = ai_classifier.classify(&input, &baseline)?;
+                let ai_result = match ai_classifier {
+                    crate::classification::RealAiClassifier::Mock(m) => m.classify(&input, &baseline)?,
+                    #[cfg(feature = "network")]
+                    crate::classification::RealAiClassifier::OpenAi(p) => p.classify(&input, &baseline)?,
+                };
 
                 let json_output = serde_json::to_string_pretty(&ai_result)?;
                 write_output(&json_output, output)?;

@@ -1,5 +1,8 @@
 use crate::classification::input::ClassificationInput;
 use crate::classification::result::{ClassificationDecision, ClassificationResult};
+#[cfg(feature = "network")]
+use crate::classification::OpenAiProvider;
+use crate::classification::MockAiClassifier;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -55,6 +58,12 @@ pub trait AiClassifier {
         input: &ClassificationInput,
         baseline: &ClassificationResult,
     ) -> Result<ClassificationResult, AiClassificationError>;
+}
+
+pub enum RealAiClassifier {
+    Mock(MockAiClassifier),
+    #[cfg(feature = "network")]
+    OpenAi(OpenAiProvider),
 }
 
 #[allow(dead_code)]

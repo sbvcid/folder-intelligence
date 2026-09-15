@@ -30,3 +30,13 @@ strip = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[features]
+default = []
+network = ["dep:reqwest"]
+
+[dependencies.reqwest]
+version = "0.13"
+optional = true
+default-features = false
+features = ["json", "blocking"]
