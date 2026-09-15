@@ -264,6 +264,28 @@ mod scanner_tests {
     }
 
     #[test]
+    fn test_max_total_files_sets_partial_scan() {
+        let dir = tempdir().unwrap();
+        for i in 0..20 {
+            fs::write(dir.path().join(format!("file{:03}.txt", i)), "x").unwrap();
+        }
+
+        let limits = ScanLimits {
+            max_total_files: 10,
+            max_representative_files: 5,
+            ..Default::default()
+        };
+
+        let scanner = Scanner::with_limits(dir.path(), limits);
+        let result = scanner.scan().unwrap();
+
+        let evidence = &result.evidence[0];
+        assert!(evidence.partial_scan, "Should be partial when max_total_files is reached during directory iteration");
+        assert_eq!(evidence.file_count, 10, "File count should be capped at max_total_files");
+        assert_eq!(result.stats.files_skipped, 10, "10 files should be skipped");
+    }
+
+    #[test]
     fn test_inspect_single_efficient() {
         let dir = tempdir().unwrap();
         // Create a complex directory structure
