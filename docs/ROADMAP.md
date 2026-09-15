@@ -8,6 +8,8 @@ The roadmap is deliberately staged. The project should validate the evidence and
 
 Goal: make the current Rust scanner trustworthy.
 
+Status: **COMPLETE**
+
 Tasks:
 
 - verify and enforce `max_depth`
@@ -26,19 +28,18 @@ Tasks:
 - expand unit and integration tests
 - validate JSON Schema against emitted JSON
 
-Required validation:
-
-```text
-cargo test
-cargo clippy -- -D warnings
-cargo build --release
-```
+Completed:
+- `partial_scan` bug fix for `max_total_files` limit
+- All limits verified with tests
+- 67+ tests passing, clippy clean, release build succeeds
 
 No AI, MCP, SQLite, GUI, or filesystem mutation in this phase.
 
 ## Phase 1 — Evidence Quality
 
 Goal: produce evidence that is genuinely useful to downstream AI.
+
+Status: **COMPLETE**
 
 Tasks:
 
@@ -53,11 +54,42 @@ Tasks:
 - design directory fingerprints
 - test evidence quality on messy real-world directory trees
 
-Success criterion:
+Completed:
+- 5-phase tiered filename sampling (identifiers → notable → rare extensions → structural positions → fill by name)
+- 12 internal unit tests for sampler quality
+- Deterministic output verified across repeated scans
+- No AI/SQLite/MCP/GUI/mutation introduced
 
-A model should be able to understand the broad structure of a directory without receiving a raw recursive file listing.
+## Phase 2 — Evidence Schema v2.0
 
-## Phase 2 — Classification Prototype
+Goal: strengthen the evidence contract with additional observational fields for downstream classification.
+
+Status: **COMPLETE**
+
+Added:
+- `depth` — directory depth from scan root (0 = root)
+- `is_empty` — explicit empty directory marker (derived: `file_count == 0 && directory_count == 0`)
+- `dominant_extensions` — top extensions by frequency with counts and percentages
+- `identifier_summary` — aggregate identifier counts (total + by type)
+- `filename_sample` (renamed from `representative_filenames`) — clearer naming
+- `syntactic_identifiers` (renamed from `potential_identifiers`) — aligns with "syntactic pattern" terminology
+- `ScanMetadata` — scan-level provenance (schema_version, scan_batch_id, scan_started_at, root_path, limits, stats)
+- JSONL header line with `ScanMetadata`
+- Deterministic fixtures in `fixtures/` directory
+- Updated JSON Schema (`schemas/directory-evidence.json` + `schemas/scan-metadata.json`)
+
+Did NOT implement (deferred):
+- `naming_pattern` (Sequential/Hashed/Mixed/Unknown) — too close to interpretation
+- `identifier_density` — name/implementation mismatch; replaced with `identifier_summary`
+
+Definition of Done:
+- `cargo test` — PASS
+- `cargo clippy -- -D warnings` — PASS
+- `cargo build --release` — PASS
+- JSON Schema validation — PASS
+- Deterministic output — PASS
+
+## Phase 3 — Classification Prototype
 
 Goal: validate the central hypothesis before integrating AI into the Rust core.
 
@@ -224,14 +256,15 @@ Potential work:
 The immediate sequence is:
 
 ```text
-1. Review current implementation
-2. Stabilize scanner correctness
-3. Validate evidence/schema semantics
-4. Improve evidence sampling
-5. Generate real JSONL evidence
-6. Build external classification benchmark
-7. Validate filesystem-precedent classification
-8. Only then implement AI/index/action layers
+1. Review current implementation          ✓ (done)
+2. Stabilize scanner correctness          ✓ (Phase 0 done)
+3. Validate evidence/schema semantics      ✓ (Phase 0 done)
+4. Improve evidence sampling              ✓ (Phase 1 done)
+5. Evidence schema v2.0 + fixtures       ✓ (Phase 2 done)
+6. Generate real JSONL evidence           ✓ (Phase 2 done)
+7. Build external classification benchmark (Phase 3 — pending)
+8. Validate filesystem-precedent classification (Phase 3 — pending)
+9. Only then implement AI/index/action layers (Phase 4+ — pending)
 ```
 
 ## Rules for AI Coding Agents
@@ -249,4 +282,4 @@ Before modifying the repository:
 
 ## Definition of Done for the Current Stage
 
-The project is ready to move beyond Phase 0 only when the scanner's documented limits and evidence semantics are enforced by tests and the emitted JSON conforms to the published schema.
+The project is ready to move beyond Phase 2 only when the evidence schema is stable, deterministic output is verified, fixtures exist, and the emitted JSON conforms to the published schema. Phase 3 (classification benchmark) may proceed.

@@ -1,6 +1,7 @@
 use crate::evidence::{
-    DirectoryEvidence, ErrorCategory, IdentifierType, PotentialIdentifier, ScanError, ScanLimits,
-    ScanResult, ScanStats, TextFilePresence,
+    DirectoryEvidence, DominantExtension, ErrorCategory, IdentifierSummary, IdentifierType,
+    ScanError, ScanLimits, ScanMetadata, ScanResult, ScanStats, SyntacticIdentifier,
+    TextFilePresence, SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -9,7 +10,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// File candidate for representative sampling.
 #[allow(dead_code)]
 struct FileCandidate {
     name: String,
@@ -19,7 +19,6 @@ struct FileCandidate {
     position: usize,
 }
 
-/// Scanner for collecting directory evidence.
 pub struct Scanner {
     limits: ScanLimits,
     stats: Arc<ScanStatsInner>,
@@ -49,7 +48,6 @@ impl Default for ScanStatsInner {
     }
 }
 
-/// Internal scan state passed through the traversal.
 struct ScanState {
     limits: ScanLimits,
     stats: Arc<ScanStatsInner>,
@@ -58,13 +56,11 @@ struct ScanState {
 }
 
 impl Scanner {
-    /// Create a new scanner with default limits.
     #[allow(dead_code)]
     pub fn new<P: AsRef<Path>>(root: P) -> Self {
         Self::with_limits(root, ScanLimits::default())
     }
 
-    /// Create a new scanner with custom limits.
     pub fn with_limits<P: AsRef<Path>>(root: P, limits: ScanLimits) -> Self {
         Self {
             limits,
@@ -74,13 +70,18 @@ impl Scanner {
         }
     }
 
-    /// Run the scan and return results.
     pub fn scan(self) -> Result<ScanResult> {
         if !self.root_path.exists() {
-            return Err(anyhow::anyhow!("Root path does not exist: {}", self.root_path.display()));
+            return Err(anyhow::anyhow!(
+                "Root path does not exist: {}",
+                self.root_path.display()
+            ));
         }
         if !self.root_path.is_dir() {
-            return Err(anyhow::anyhow!("Root path is not a directory: {}", self.root_path.display()));
+            return Err(anyhow::anyhow!(
+                "Root path is not a directory: {}",
+                self.root_path.display()
+            ));
         }
 
         let state = ScanState {
@@ -90,12 +91,16 @@ impl Scanner {
             root_path: self.root_path.clone(),
         };
 
+        let scan_batch_id = generate_batch_id();
+        let scan_started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         let mut all_evidence = Vec::new();
-        // Stack of (directory_path, depth)
         let mut dirs_to_scan: Vec<(PathBuf, usize)> = vec![(state.root_path.clone(), 0)];
 
         while let Some((dir, depth)) = dirs_to_scan.pop() {
-            // Check timeout
             if state.limits.timeout_seconds > 0
                 && state.start_time.elapsed() > Duration::from_secs(state.limits.timeout_seconds)
             {
@@ -104,14 +109,12 @@ impl Scanner {
                     message: "Scan timeout exceeded".to_string(),
                     category: ErrorCategory::Timeout,
                 });
-                // Record partial evidence with limit reached flag
                 if let Some(ev) = scan_directory_partial(&dir, &state, depth) {
                     all_evidence.push(ev);
                 }
                 break;
             }
 
-            // Check max_total_dirs
             let dirs_scanned = state.stats.directories_scanned.load(Ordering::Relaxed);
             if dirs_scanned >= state.limits.max_total_dirs as u64 {
                 state.stats.dirs_skipped.fetch_add(1, Ordering::Relaxed);
@@ -120,20 +123,17 @@ impl Scanner {
                     message: "Max total directories limit reached".to_string(),
                     category: ErrorCategory::LimitExceeded,
                 });
-                // Record partial evidence for this directory
                 if let Some(ev) = scan_directory_partial(&dir, &state, depth) {
                     all_evidence.push(ev);
                 }
                 break;
             }
 
-            // Check max_depth
             if state.limits.max_depth > 0 && depth >= state.limits.max_depth {
                 state.stats.dirs_skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
 
-            // Check max_total_files
             let files_encountered = state.stats.files_encountered.load(Ordering::Relaxed);
             if files_encountered >= state.limits.max_total_files as u64 {
                 state.stats.errors.lock().unwrap().push(ScanError {
@@ -141,19 +141,16 @@ impl Scanner {
                     message: "Max total files limit reached".to_string(),
                     category: ErrorCategory::LimitExceeded,
                 });
-                // Record partial evidence for this directory
                 if let Some(ev) = scan_directory_partial(&dir, &state, depth) {
                     all_evidence.push(ev);
                 }
                 break;
             }
 
-            // Scan this directory
             match scan_single_directory(&dir, &state.root_path, &state, depth) {
                 Ok((evidence, subdirs)) => {
                     state.stats.directories_scanned.fetch_add(1, Ordering::Relaxed);
                     all_evidence.push(evidence);
-                    // Add subdirs to queue with depth (reverse for DFS-like order)
                     for subdir in subdirs.into_iter().rev() {
                         dirs_to_scan.push((subdir, depth + 1));
                     }
@@ -171,28 +168,42 @@ impl Scanner {
         let errors = state.stats.errors.lock().unwrap().clone();
         let duration_ms = state.start_time.elapsed().as_millis() as u64;
 
+        let stats = ScanStats {
+            directories_scanned: state.stats.directories_scanned.load(Ordering::Relaxed),
+            files_encountered: state.stats.files_encountered.load(Ordering::Relaxed),
+            bytes_scanned: state.stats.bytes_scanned.load(Ordering::Relaxed),
+            dirs_skipped: state.stats.dirs_skipped.load(Ordering::Relaxed),
+            files_skipped: state.stats.files_skipped.swap(0, Ordering::Relaxed),
+            errors,
+            duration_ms,
+        };
+
         Ok(ScanResult {
-            evidence: all_evidence,
-            stats: ScanStats {
-                directories_scanned: state.stats.directories_scanned.load(Ordering::Relaxed),
-                files_encountered: state.stats.files_encountered.load(Ordering::Relaxed),
-                bytes_scanned: state.stats.bytes_scanned.load(Ordering::Relaxed),
-                dirs_skipped: state.stats.dirs_skipped.load(Ordering::Relaxed),
-                files_skipped: state.stats.files_skipped.load(Ordering::Relaxed),
-                errors,
-                duration_ms,
+            metadata: ScanMetadata {
+                _type: "scan_metadata".to_string(),
+                schema_version: SCHEMA_VERSION.to_string(),
+                scan_batch_id,
+                scan_started_at,
+                root_path: state.root_path.clone(),
+                limits: state.limits.clone(),
+                stats,
             },
+            evidence: all_evidence,
         })
     }
 
-    /// Scan only a single directory without recursing into subdirectories.
-    /// Used by the `inspect` command for efficient single-directory evidence.
     pub fn inspect_single(self) -> Result<ScanResult> {
         if !self.root_path.exists() {
-            return Err(anyhow::anyhow!("Root path does not exist: {}", self.root_path.display()));
+            return Err(anyhow::anyhow!(
+                "Root path does not exist: {}",
+                self.root_path.display()
+            ));
         }
         if !self.root_path.is_dir() {
-            return Err(anyhow::anyhow!("Root path is not a directory: {}", self.root_path.display()));
+            return Err(anyhow::anyhow!(
+                "Root path is not a directory: {}",
+                self.root_path.display()
+            ));
         }
 
         let state = ScanState {
@@ -202,10 +213,15 @@ impl Scanner {
             root_path: self.root_path.clone(),
         };
 
+        let scan_batch_id = generate_batch_id();
+        let scan_started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         let mut all_evidence = Vec::new();
         let root = &state.root_path;
 
-        // Check timeout
         if state.limits.timeout_seconds > 0
             && state.start_time.elapsed() > Duration::from_secs(state.limits.timeout_seconds)
         {
@@ -214,17 +230,28 @@ impl Scanner {
                 message: "Scan timeout exceeded".to_string(),
                 category: ErrorCategory::Timeout,
             });
+            let errors = state.stats.errors.lock().unwrap().clone();
+            let duration_ms = state.start_time.elapsed().as_millis() as u64;
+            let stats = ScanStats {
+                directories_scanned: state.stats.directories_scanned.load(Ordering::Relaxed),
+                files_encountered: state.stats.files_encountered.load(Ordering::Relaxed),
+                bytes_scanned: state.stats.bytes_scanned.load(Ordering::Relaxed),
+                dirs_skipped: state.stats.dirs_skipped.load(Ordering::Relaxed),
+                files_skipped: state.stats.files_skipped.swap(0, Ordering::Relaxed),
+                errors,
+                duration_ms,
+            };
             return Ok(ScanResult {
-                evidence: all_evidence,
-                stats: ScanStats {
-                    directories_scanned: state.stats.directories_scanned.load(Ordering::Relaxed),
-                    files_encountered: state.stats.files_encountered.load(Ordering::Relaxed),
-                    bytes_scanned: state.stats.bytes_scanned.load(Ordering::Relaxed),
-                    dirs_skipped: state.stats.dirs_skipped.load(Ordering::Relaxed),
-                    files_skipped: state.stats.files_skipped.load(Ordering::Relaxed),
-                    errors: state.stats.errors.lock().unwrap().clone(),
-                    duration_ms: state.start_time.elapsed().as_millis() as u64,
+                metadata: ScanMetadata {
+                    _type: "scan_metadata".to_string(),
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    scan_batch_id,
+                    scan_started_at,
+                    root_path: state.root_path.clone(),
+                    limits: state.limits.clone(),
+                    stats,
                 },
+                evidence: all_evidence,
             });
         }
 
@@ -245,28 +272,87 @@ impl Scanner {
         let errors = state.stats.errors.lock().unwrap().clone();
         let duration_ms = state.start_time.elapsed().as_millis() as u64;
 
+        let stats = ScanStats {
+            directories_scanned: state.stats.directories_scanned.load(Ordering::Relaxed),
+            files_encountered: state.stats.files_encountered.load(Ordering::Relaxed),
+            bytes_scanned: state.stats.bytes_scanned.load(Ordering::Relaxed),
+            dirs_skipped: state.stats.dirs_skipped.load(Ordering::Relaxed),
+            files_skipped: state.stats.files_skipped.swap(0, Ordering::Relaxed),
+            errors,
+            duration_ms,
+        };
+
         Ok(ScanResult {
-            evidence: all_evidence,
-            stats: ScanStats {
-                directories_scanned: state.stats.directories_scanned.load(Ordering::Relaxed),
-                files_encountered: state.stats.files_encountered.load(Ordering::Relaxed),
-                bytes_scanned: state.stats.bytes_scanned.load(Ordering::Relaxed),
-                dirs_skipped: state.stats.dirs_skipped.load(Ordering::Relaxed),
-                files_skipped: state.stats.files_skipped.load(Ordering::Relaxed),
-                errors,
-                duration_ms,
+            metadata: ScanMetadata {
+                _type: "scan_metadata".to_string(),
+                schema_version: SCHEMA_VERSION.to_string(),
+                scan_batch_id,
+                scan_started_at,
+                root_path: state.root_path.clone(),
+                limits: state.limits.clone(),
+                stats,
             },
+            evidence: all_evidence,
         })
     }
 }
 
-/// Scan a single directory and collect evidence.
-/// Returns the evidence and a list of subdirectory paths to scan.
+fn generate_batch_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:016x}", nanos)
+}
+
+fn compute_dominant_extensions(
+    histogram: &HashMap<String, u64>,
+    file_count: u64,
+    max_entries: usize,
+) -> Vec<DominantExtension> {
+    let mut entries: Vec<(String, u64)> = histogram
+        .iter()
+        .map(|(k, &v)| (k.clone(), v))
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    entries.truncate(max_entries);
+
+    entries
+        .into_iter()
+        .map(|(ext, count)| {
+            let percentage = if file_count > 0 {
+                (count as f64 / file_count as f64) * 100.0
+            } else {
+                0.0
+            };
+            DominantExtension {
+                extension: ext,
+                count,
+                percentage,
+            }
+        })
+        .collect()
+}
+
+fn compute_identifier_summary(
+    identifiers: &[SyntacticIdentifier],
+) -> IdentifierSummary {
+    let total = identifiers.len();
+    let mut by_type: HashMap<IdentifierType, usize> = HashMap::new();
+    for id in identifiers {
+        *by_type.entry(id.identifier_type.clone()).or_insert(0) += 1;
+    }
+    IdentifierSummary {
+        total,
+        by_type,
+    }
+}
+
 fn scan_single_directory(
     dir: &Path,
     root: &Path,
     state: &ScanState,
-    _depth: usize,
+    depth: usize,
 ) -> Result<(DirectoryEvidence, Vec<PathBuf>)> {
     let dir_start = Instant::now();
     let mut file_count = 0u64;
@@ -275,7 +361,7 @@ fn scan_single_directory(
     let mut extension_histogram = HashMap::new();
     let mut child_directory_names = Vec::new();
     let mut notable_filenames = Vec::new();
-    let mut potential_identifiers = Vec::new();
+    let mut syntactic_identifiers = Vec::new();
     let mut text_file_presence = TextFilePresence::default();
     let mut subdirs = Vec::new();
     let mut partial = false;
@@ -286,7 +372,6 @@ fn scan_single_directory(
         .with_context(|| format!("Failed to read directory: {}", dir.display()))?;
 
     for entry in read_dir {
-        // Check timeout periodically inside directory iteration
         if state.limits.timeout_seconds > 0
             && state.start_time.elapsed() > Duration::from_secs(state.limits.timeout_seconds)
         {
@@ -346,7 +431,6 @@ fn scan_single_directory(
             }
         };
 
-        // Skip symlinks and reparse points to avoid loops
         if ft.is_symlink() {
             continue;
         }
@@ -356,14 +440,12 @@ fn scan_single_directory(
             child_directory_names.push(file_name_str.clone());
             subdirs.push(path.clone());
         } else if ft.is_file() {
-            // Check per-directory file limit
             if file_count >= state.limits.max_files_per_dir as u64 {
                 state.stats.files_skipped.fetch_add(1, Ordering::Relaxed);
                 partial = true;
                 continue;
             }
 
-            // Check max_total_files (across entire scan)
             let files_encountered = state.stats.files_encountered.load(Ordering::Relaxed);
             if files_encountered >= state.limits.max_total_files as u64 {
                 state.stats.files_skipped.fetch_add(1, Ordering::Relaxed);
@@ -393,29 +475,24 @@ fn scan_single_directory(
             total_size += size;
             state.stats.bytes_scanned.fetch_add(size, Ordering::Relaxed);
 
-            // Extract extension
             let extension = path.extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase())
                 .unwrap_or_else(|| "(no extension)".to_string());
             *extension_histogram.entry(extension.clone()).or_insert(0) += 1;
 
-            // Check for notable filename
             let lower_name = file_name_str.to_lowercase();
             let is_notable = is_notable_filename(&lower_name);
             if is_notable {
                 notable_filenames.push(file_name_str.clone());
             }
 
-            // Check for potential identifiers in this filename
             let idents = extract_identifiers(&file_name_str);
             let has_identifier = !idents.is_empty();
-            potential_identifiers.extend(idents);
+            syntactic_identifiers.extend(idents);
 
-            // Update text file presence
             update_text_file_presence(&lower_name, &file_name_str, &mut text_file_presence);
 
-            // Collect candidate for representative sampling
             file_candidates.push(FileCandidate {
                 name: file_name_str.clone(),
                 extension,
@@ -426,30 +503,29 @@ fn scan_single_directory(
         }
     }
 
-    // Select representative filenames using intelligent sampling
-    let representative_filenames = select_representative_filenames(
+    let filename_sample = select_representative_filenames(
         &file_candidates,
         &extension_histogram,
         state.limits.max_representative_files,
     );
 
-    // Limit child_directory_names output to max_child_dirs
     let child_directory_names: Vec<String> = child_directory_names
         .into_iter()
         .take(state.limits.max_child_dirs)
         .collect();
 
-    // Deduplicate notable filenames
     notable_filenames.sort();
     notable_filenames.dedup();
 
-    // Deduplicate potential identifiers (by value + source filename)
-    potential_identifiers.sort_by(|a, b| {
+    syntactic_identifiers.sort_by(|a, b| {
         a.value.cmp(&b.value).then_with(|| a.source_filename.cmp(&b.source_filename))
     });
-    potential_identifiers.dedup_by(|a, b| a.value == b.value && a.source_filename == b.source_filename);
+    syntactic_identifiers.dedup_by(|a, b| a.value == b.value && a.source_filename == b.source_filename);
 
-    // Parent path
+    let dominant_extensions = compute_dominant_extensions(&extension_histogram, file_count, 10);
+    let identifier_summary = compute_identifier_summary(&syntactic_identifiers);
+    let is_empty = file_count == 0 && directory_count == 0;
+
     let parent_path = if dir == root {
         None
     } else {
@@ -473,29 +549,32 @@ fn scan_single_directory(
         path: dir.to_path_buf(),
         name,
         parent_path,
+        depth,
         file_count,
         directory_count,
         total_size,
         extension_histogram,
+        dominant_extensions,
+        identifier_summary,
         child_directory_names,
-        representative_filenames,
+        filename_sample,
         notable_filenames,
-        potential_identifiers,
+        syntactic_identifiers,
         text_file_presence,
+        is_empty,
         partial_scan: partial,
         scanned_at,
         scan_duration_ms,
+        schema_version: SCHEMA_VERSION.to_string(),
     };
 
     Ok((evidence, subdirs))
 }
 
-/// Scan a directory partially (for evidence when limits are reached).
-/// This produces evidence with what can be collected before the scan stopped.
 fn scan_directory_partial(
     dir: &Path,
     state: &ScanState,
-    _depth: usize,
+    depth: usize,
 ) -> Option<DirectoryEvidence> {
     let mut file_count = 0u64;
     let mut directory_count = 0u64;
@@ -519,7 +598,6 @@ fn scan_directory_partial(
             Err(_) => continue,
         };
 
-        // Skip symlinks and reparse points to avoid loops
         if ft.is_symlink() {
             continue;
         }
@@ -530,7 +608,6 @@ fn scan_directory_partial(
                 child_directory_names.push(name.to_string());
             }
         } else if ft.is_file() {
-            // Check per-directory file limit
             if file_count >= state.limits.max_files_per_dir as u64 {
                 break;
             }
@@ -564,35 +641,43 @@ fn scan_directory_partial(
         .unwrap_or_default()
         .as_secs();
 
+    let dominant_extensions = compute_dominant_extensions(&extension_histogram, file_count, 10);
+    let identifier_summary = IdentifierSummary::default();
+    let is_empty = file_count == 0 && directory_count == 0;
+
     Some(DirectoryEvidence {
         path: dir.to_path_buf(),
         name,
         parent_path,
+        depth,
         file_count,
         directory_count,
         total_size,
         extension_histogram,
+        dominant_extensions,
+        identifier_summary,
         child_directory_names: child_directory_names
             .into_iter()
             .take(state.limits.max_child_dirs)
             .collect(),
-        representative_filenames: Vec::new(),
+        filename_sample: Vec::new(),
         notable_filenames: Vec::new(),
-        potential_identifiers: Vec::new(),
+        syntactic_identifiers: Vec::new(),
         text_file_presence: TextFilePresence::default(),
+        is_empty,
         partial_scan: true,
         scanned_at,
         scan_duration_ms: 0,
+        schema_version: SCHEMA_VERSION.to_string(),
     })
 }
 
-/// Check if an error is a permission error (cross-platform).
 fn is_permission_error(error: &std::io::Error) -> bool {
     match error.raw_os_error() {
-        Some(13) => true,  // EACCES (Unix)
-        Some(5) => true,   // ERROR_ACCESS_DENIED (Windows)
-        Some(1) => true,   // EPERM (Unix)
-        Some(1314) => true, // ERROR_PRIVILEGE_NOT_HELD (Windows)
+        Some(13) => true,
+        Some(5) => true,
+        Some(1) => true,
+        Some(1314) => true,
         _ => error.to_string().to_lowercase().contains("permission"),
     }
 }
@@ -658,16 +743,14 @@ fn update_text_file_presence(
     }
 }
 
-/// Maximum number of identifiers to extract per file to prevent noise.
 const MAX_IDENTIFIERS_PER_FILE: usize = 10;
 
-fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
+fn extract_identifiers(filename: &str) -> Vec<SyntacticIdentifier> {
     let mut identifiers = Vec::new();
 
-    // ISBN-10 (10 digits, optionally with hyphens)
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(isbn) = extract_isbn10(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: isbn,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Isbn,
@@ -675,10 +758,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // ISBN-13 (13 digits, optionally with hyphens)
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(isbn) = extract_isbn13(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: isbn,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Isbn,
@@ -686,10 +768,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // DOI
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(doi) = extract_doi(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: doi,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Doi,
@@ -697,10 +778,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // UUID
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(uuid) = extract_uuid(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: uuid,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Uuid,
@@ -708,10 +788,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // Semantic version
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(ver) = extract_semver(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: ver,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Semver,
@@ -719,10 +798,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // Hash (MD5, SHA1, SHA256)
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(hash) = extract_hash(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: hash,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Hash,
@@ -730,10 +808,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // Date patterns
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(date) = extract_date(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: date,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Date,
@@ -741,10 +818,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // Email
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(email) = extract_email(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: email,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Email,
@@ -752,10 +828,9 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // URL
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         if let Some(url) = extract_url(filename) {
-            identifiers.push(PotentialIdentifier {
+            identifiers.push(SyntacticIdentifier {
                 value: url,
                 source_filename: filename.to_string(),
                 identifier_type: IdentifierType::Url,
@@ -763,7 +838,6 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
         }
     }
 
-    // Alphanumeric codes (e.g., SKU-001, ABC123, limited to avoid noise)
     if identifiers.len() < MAX_IDENTIFIERS_PER_FILE {
         identifiers.extend(extract_alphanumeric_codes(filename));
     }
@@ -771,27 +845,22 @@ fn extract_identifiers(filename: &str) -> Vec<PotentialIdentifier> {
     identifiers
 }
 
-// Identifier extraction functions
 fn extract_isbn10(s: &str) -> Option<String> {
-    // ISBN-10: 10 digits (last can be X), optionally with hyphens/space
     let re = regex::Regex::new(r"(?:\d[-\s]?){9}[\dX]").ok()?;
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_isbn13(s: &str) -> Option<String> {
-    // ISBN-13: starts with 978 or 979, 13 digits, optionally with hyphens
     let re = regex::Regex::new(r"(?:97[89][-\s]?(?:\d[-\s]?){1,5}\d[-\s]?(?:\d[-\s]?){1,7}\d[-\s]?(?:\d[-\s]?){1,7}\d)").ok()?;
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_doi(s: &str) -> Option<String> {
-    // DOI: 10.xxxx/xxxx
     let re = regex::Regex::new(r"10\.\d{4,9}[/_][-_/;:A-Za-z0-9]+").ok()?;
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_uuid(s: &str) -> Option<String> {
-    // UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     let re = regex::Regex::new(
         r"(?:^|[^0-9a-fA-F])([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[^0-9a-fA-F]|$)"
     ).ok()?;
@@ -799,7 +868,6 @@ fn extract_uuid(s: &str) -> Option<String> {
 }
 
 fn extract_semver(s: &str) -> Option<String> {
-    // SemVer: v?major.minor.patch(-prerelease)?(+build)?
     let re = regex::Regex::new(
         r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)"
     ).ok()?;
@@ -807,7 +875,6 @@ fn extract_semver(s: &str) -> Option<String> {
 }
 
 fn extract_hash(s: &str) -> Option<String> {
-    // MD5 (32 hex), SHA1 (40 hex), SHA256 (64 hex)
     let re = regex::Regex::new(r"(?:^|[^0-9a-fA-F])([a-fA-F0-9]{32})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{40})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{64})(?:[^0-9a-fA-F]|$)").ok()?;
     re.captures(s).and_then(|caps| {
         caps.get(1).or_else(|| caps.get(2)).or_else(|| caps.get(3))
@@ -816,7 +883,6 @@ fn extract_hash(s: &str) -> Option<String> {
 }
 
 fn extract_date(s: &str) -> Option<String> {
-    // YYYY-MM-DD, YYYYMMDD, YYYY/MM/DD, DD-MM-YYYY, etc.
     let re = regex::Regex::new(
         r"(?:^|[^0-9A-Za-z.-])(19|20)\d{2}[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](19|20)\d{2}(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)"
     ).ok()?;
@@ -833,13 +899,11 @@ fn extract_url(s: &str) -> Option<String> {
     re.find(s).map(|m| m.as_str().to_string())
 }
 
-fn extract_alphanumeric_codes(s: &str) -> Vec<PotentialIdentifier> {
-    // Patterns like SKU-001, ABC123, PROD-2024-001, etc.
-    // Require at least 2 uppercase letters followed by digits, or digits after hyphen/underscore
+fn extract_alphanumeric_codes(s: &str) -> Vec<SyntacticIdentifier> {
     let re = regex::Regex::new(r"[A-Z]{2,}[-_]?\d{3,}(?:[-_]\d+)*|[A-Z]{2,}[-_]?[A-Z]+\d{2,}").unwrap();
     re.find_iter(s)
         .take(MAX_IDENTIFIERS_PER_FILE)
-        .map(|m| PotentialIdentifier {
+        .map(|m| SyntacticIdentifier {
             value: m.as_str().to_string(),
             source_filename: s.to_string(),
             identifier_type: IdentifierType::AlphanumericCode,
@@ -847,20 +911,6 @@ fn extract_alphanumeric_codes(s: &str) -> Vec<PotentialIdentifier> {
         .collect()
 }
 
-/// Select representative filenames using priority-tiered sampling with structural diversity.
-///
-/// The algorithm works in tiers:
-/// 1. **Identifier files**: Files with potential identifiers (ISBN, UUID, DOI, etc.)
-///    receive top priority, but are capped to prevent dominating the sample.
-/// 2. **Notable files**: README, LICENSE, etc.
-/// 3. **Rare extension files**: Files whose extension appears infrequently in the directory.
-///    This ensures minority file types are represented.
-/// 4. **Structural samples**: When the directory has enough files relative to the budget,
-///    sample across different positions (early, middle, late) to preserve structural diversity.
-/// 5. **Remaining files**: Fill remaining budget from other files, respecting extension diversity.
-///
-/// Diversity constraint: For directories with >2 unique extensions, no single extension exceeds
-/// a soft limit based on budget and extension distribution.
 fn select_representative_filenames(
     candidates: &[FileCandidate],
     extension_histogram: &HashMap<String, u64>,
@@ -882,28 +932,23 @@ fn select_representative_filenames(
     let mut ext_count: HashMap<String, usize> = HashMap::new();
     let mut result: Vec<String> = Vec::new();
 
-    // Phase 1: Identifier-bearing files (capped at 25% of budget)
     let id_budget = if budget <= 4 { 1 } else { (budget / 4).max(1) };
     for c in candidates.iter() {
         if result.len() >= id_budget {
             break;
         }
         if c.has_identifier && try_add(c, &mut result, &mut ext_count, budget, max_per_ext) {
-            // added
         }
     }
 
-    // Phase 2: Notable files
     for c in candidates.iter() {
         if result.len() >= budget {
             break;
         }
         if c.is_notable && try_add(c, &mut result, &mut ext_count, budget, max_per_ext) {
-            // added
         }
     }
 
-    // Phase 3: Rare extension files (frequency <= 5), sorted by frequency ascending
     let mut rare_candidates: Vec<&FileCandidate> = candidates
         .iter()
         .filter(|c| {
@@ -923,7 +968,6 @@ fn select_representative_filenames(
         try_add(c, &mut result, &mut ext_count, budget, max_per_ext);
     }
 
-    // Phase 4: Structural sampling (early, middle, last positions)
     if candidates.len() > budget * 2 {
         let positions = compute_structural_positions(candidates.len(), budget);
         for &pos in &positions {
@@ -935,7 +979,6 @@ fn select_representative_filenames(
         }
     }
 
-    // Phase 5: Fill remaining budget deterministically (by name for stability)
     let mut remaining: Vec<&FileCandidate> = candidates
         .iter()
         .filter(|c| !result.contains(&c.name))
@@ -974,10 +1017,6 @@ fn try_add(
     }
 }
 
-/// Compute positions for structural sampling that spread across the candidate list.
-/// Returns positions in order, guaranteed to be within `[0, total)`.
-/// For small budgets, returns evenly-spaced positions. For larger budgets,
-/// it also ensures early, middle, and late positions are represented.
 fn compute_structural_positions(total: usize, budget: usize) -> Vec<usize> {
     if total == 0 || budget == 0 {
         return Vec::new();
@@ -986,14 +1025,9 @@ fn compute_structural_positions(total: usize, budget: usize) -> Vec<usize> {
     let mut positions = Vec::with_capacity(budget.min(total));
 
     if total <= budget {
-        // Directory has fewer files than budget; all positions are covered by other phases.
         return positions;
     }
 
-    // When the directory is large, always include:
-    // - The first position (idx 0)
-    // - The last position (idx total-1)
-    // - Evenly-spaced positions for the rest
     let first = 0usize;
     let last = total - 1;
 
@@ -1008,13 +1042,10 @@ fn compute_structural_positions(total: usize, budget: usize) -> Vec<usize> {
         return positions;
     }
 
-    // For budget >= 3: sample first, last, and evenly-spaced middle positions.
-    // The middle positions are spread evenly between first and last.
     let middle_count = budget - 2;
     positions.push(first);
     positions.push(last);
 
-    // Distribute middle positions evenly; use (total-1) as divisor for spacing
     let step = if middle_count > 0 {
         (total - 1) as f64 / (middle_count + 1) as f64
     } else {
@@ -1029,7 +1060,6 @@ fn compute_structural_positions(total: usize, budget: usize) -> Vec<usize> {
         current += step;
     }
 
-    // If rounding caused duplicates, fill with remaining positions deterministically
     if positions.len() < budget {
         let mut candidate_positions: Vec<usize> = (0..total).collect();
         candidate_positions.retain(|p| !positions.contains(p));
@@ -1047,8 +1077,8 @@ fn compute_structural_positions(total: usize, budget: usize) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::collections::HashMap;
+    use std::fs;
     use tempfile::tempdir;
 
     fn make_candidates_single_ext(names: &[&str], extension: &str) -> Vec<FileCandidate> {
@@ -1093,7 +1123,6 @@ mod tests {
 
     #[test]
     fn test_homogeneous_sequential_directory() {
-        // Create candidates simulating 001.mp3 through 2981.mp3
         let names: Vec<String> = (1..=2981).map(|i| format!("{:03}.mp3", i)).collect();
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let candidates = make_candidates_single_ext(&name_refs, "mp3");
@@ -1103,7 +1132,6 @@ mod tests {
             let result = select_representative_filenames(&candidates, &ext_hist, budget);
             assert_eq!(result.len(), budget.min(candidates.len()));
 
-            // With budget >= 2 and 2981 files, should have structural diversity (first + last)
             if budget >= 2 {
                 let first_in_result = result.iter().any(|n| n.starts_with("001.mp3"));
                 let last_in_result = result.iter().any(|n| n.starts_with("2981.mp3"));
@@ -1111,9 +1139,7 @@ mod tests {
                 assert!(last_in_result, "Budget {} should include last file", budget);
             }
 
-            // With budget >= 5, should have files from different regions (not all early)
             if budget >= 5 {
-                // At least one file should be from the middle third of the directory
                 let has_mid = result.iter().any(|n| {
                     let num: u32 = n.trim_end_matches(".mp3").parse().unwrap();
                     num >= 900 && num <= 2100
@@ -1125,29 +1151,24 @@ mod tests {
 
     #[test]
     fn test_mixed_extensions_rare_preserved() {
-        // 10 .mp3 + 1 .jpg + 1 .txt + 1 .unknown
         let names = vec!["001.mp3", "002.mp3", "003.mp3", "004.mp3", "005.mp3",
                          "006.mp3", "007.mp3", "008.mp3", "009.mp3", "010.mp3",
                          "cover.jpg", "README.txt", "config.unknown"];
         let extensions = vec!["mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3",
-                             "jpg", "txt", "unknown"];
+                              "jpg", "txt", "unknown"];
         let candidates = make_candidates_multi(&names, &extensions, &[], &[]);
         let ext_hist = make_ext_hist_from_candidates(&candidates);
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        // Should include the rare extensions (jpg, txt, unknown)
         assert!(result.contains(&"cover.jpg".to_string()), "Should include rare .jpg");
         assert!(result.contains(&"README.txt".to_string()), "Should include rare .txt");
         assert!(result.contains(&"config.unknown".to_string()), "Should include rare .unknown");
-
-        // The first .mp3 should also be represented structurally
         assert!(result.contains(&"001.mp3".to_string()), "Should include first .mp3");
     }
 
     #[test]
     fn test_notable_files_priority() {
-        // Many .mp3 files + README, LICENSE, cover.jpg
         let mut names: Vec<String> = (1..=50).map(|i| format!("{:03}.mp3", i)).collect();
         names.extend_from_slice(&["README.md".to_string(), "LICENSE".to_string(), "cover.jpg".to_string()]);
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -1162,20 +1183,17 @@ mod tests {
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        // Notable files should be included
         assert!(result.contains(&"README.md".to_string()), "Should include README.md");
         assert!(result.contains(&"LICENSE".to_string()), "Should include LICENSE");
-        // cover.jpg should also be represented (rare extension)
         assert!(result.contains(&"cover.jpg".to_string()), "Should include cover.jpg");
     }
 
     #[test]
     fn test_identifier_bearing_priority() {
-        // 20 regular files + 3 identifier-bearing files
         let mut names: Vec<String> = (1..=20).map(|i| format!("file{:03}.txt", i)).collect();
         names.push("song_550e8400-e29b-41d4-a716-446655440000.mp3".to_string());
-        names.push("doc_10.1038_nature12373.pdf".to_string());
-        names.push("data_978-0-306-40615-7.bin".to_string());
+        names.push("doc_10.1038_nature12373_2024-01-15.pdf".to_string());
+        names.push("data_978-0-306-40615-7_v1.2.3.bin".to_string());
 
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
 
@@ -1184,8 +1202,8 @@ mod tests {
 
         let idents = vec![
             "song_550e8400-e29b-41d4-a716-446655440000.mp3",
-            "doc_10.1038_nature12373.pdf",
-            "data_978-0-306-40615-7.bin",
+            "doc_10.1038_nature12373_2024-01-15.pdf",
+            "data_978-0-306-40615-7_v1.2.3.bin",
         ];
 
         let candidates = make_candidates_multi(&name_refs, &extensions, &idents, &[]);
@@ -1193,18 +1211,14 @@ mod tests {
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        // Identifier files should be included
         assert!(result.contains(&"song_550e8400-e29b-41d4-a716-446655440000.mp3".to_string()));
-        assert!(result.contains(&"doc_10.1038_nature12373.pdf".to_string()));
-        assert!(result.contains(&"data_978-0-306-40615-7.bin".to_string()));
-
-        // Should also include regular files (not all identifier-bearing)
+        assert!(result.contains(&"doc_10.1038_nature12373_2024-01-15.pdf".to_string()));
+        assert!(result.contains(&"data_978-0-306-40615-7_v1.2.3.bin".to_string()));
         assert!(result.iter().any(|n| n.starts_with("file0")), "Should include at least one regular file");
     }
 
     #[test]
     fn test_small_budget_deterministic() {
-        // 100 files, all .mp3, no identifiers or notable files
         let names: Vec<String> = (1..=100).map(|i| format!("{:03}.mp3", i)).collect();
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let candidates = make_candidates_single_ext(&name_refs, "mp3");
@@ -1216,12 +1230,10 @@ mod tests {
             assert_eq!(result1, result2, "Budget {} should be deterministic", budget);
             assert_eq!(result1.len(), budget, "Budget {} should return {} items", budget, budget);
 
-            // Budget 1: first file only
             if budget == 1 {
                 assert_eq!(result1, vec!["001.mp3"]);
             }
 
-            // Budget 2: first and last
             if budget == 2 {
                 assert!(result1.contains(&"001.mp3".to_string()));
                 assert!(result1.contains(&"100.mp3".to_string()));
@@ -1232,11 +1244,9 @@ mod tests {
     #[test]
     fn test_determinism_across_scans() {
         let dir = tempdir().unwrap();
-        // Create files with random names to ensure enumeration order doesn't matter
         for i in 0..50 {
             fs::write(dir.path().join(format!("file_{:03}.txt", i)), "x").unwrap();
         }
-        // Add some identifier and notable files
         fs::write(dir.path().join("README.md"), "readme").unwrap();
         fs::write(dir.path().join("song_550e8400.mp3"), "song").unwrap();
 
@@ -1252,15 +1262,14 @@ mod tests {
         let result2 = scanner2.scan().unwrap();
 
         assert_eq!(
-            result1.evidence[0].representative_filenames,
-            result2.evidence[0].representative_filenames,
-            "Repeated scans must produce identical representative_filenames"
+            result1.evidence[0].filename_sample,
+            result2.evidence[0].filename_sample,
+            "Repeated scans must produce identical filename_sample"
         );
     }
 
     #[test]
     fn test_extension_diversity_homogeneous() {
-        // Homogeneous directory: all same extension, budget=10
         let names: Vec<String> = (1..=100).map(|i| format!("file{:03}.mp3", i)).collect();
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let candidates = make_candidates_single_ext(&name_refs, "mp3");
@@ -1268,14 +1277,12 @@ mod tests {
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        // With 1 extension, max_per_ext = budget, so all 10 should be filled
         assert_eq!(result.len(), 10);
     }
 
     #[test]
     fn test_partial_scan_bounded_and_deterministic() {
         let dir = tempdir().unwrap();
-        // Create files exceeding max_files_per_dir
         for i in 0..300 {
             fs::write(dir.path().join(format!("file{:03}.txt", i)), "x").unwrap();
         }
@@ -1291,15 +1298,13 @@ mod tests {
 
         let evidence = &result.evidence[0];
         assert!(evidence.partial_scan, "Should be marked as partial");
-        // Partial scan still collects representative filenames from the files that were scanned
-        assert!(evidence.representative_filenames.len() <= 10, "Representative filenames should be bounded");
+        assert!(evidence.filename_sample.len() <= 10, "filename_sample should be bounded");
         assert_eq!(evidence.file_count, 50, "File count should be limited by max_files_per_dir");
     }
 
     #[test]
     fn test_unicode_filenames_deterministic() {
         let dir = tempdir().unwrap();
-        // Create Unicode filenames
         fs::write(dir.path().join("文件_001.txt"), "1").unwrap();
         fs::write(dir.path().join("文件_002.txt"), "2").unwrap();
         fs::write(dir.path().join("файл_003.txt"), "3").unwrap();
@@ -1317,15 +1322,14 @@ mod tests {
         let result2 = scanner2.scan().unwrap();
 
         assert_eq!(
-            result1.evidence[0].representative_filenames,
-            result2.evidence[0].representative_filenames,
+            result1.evidence[0].filename_sample,
+            result2.evidence[0].filename_sample,
             "Unicode filenames should be handled deterministically"
         );
     }
 
     #[test]
     fn test_extension_diversity_mixed() {
-        // 10 .mp3, 10 .txt, 1 .jpg, 1 .bin - budget 10
         let mut names: Vec<String> = (1..=10).map(|i| format!("{:03}.mp3", i)).collect();
         names.extend((1..=10).map(|i| format!("file{:03}.txt", i)));
         names.extend_from_slice(&["cover.jpg".to_string(), "data.bin".to_string()]);
@@ -1340,34 +1344,24 @@ mod tests {
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        // Rare extensions (jpg, bin - freq 1) should be represented
         assert!(result.contains(&"cover.jpg".to_string()), "Should include rare .jpg");
         assert!(result.contains(&"data.bin".to_string()), "Should include rare .bin");
-
-        // With max_per_ext = 5 (budget / 2), and 4 unique extensions,
-        // we should be able to fit the rare files plus some common ones
         assert_eq!(result.len(), 10);
     }
 
-     #[test]
+    #[test]
     fn test_compute_structural_positions() {
-        // budget=1: only first
         assert_eq!(compute_structural_positions(1000, 1), vec![0]);
-
-        // budget=2: first and last
         assert_eq!(compute_structural_positions(1000, 2), vec![0, 999]);
 
-        // budget=3: first, last, and middle (~500)
         let result = compute_structural_positions(1000, 3);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], 0);
         assert_eq!(result[1], 999);
         assert!(result[2] >= 400 && result[2] <= 600, "Middle position should be around 500, got {}", result[2]);
 
-        // Budget larger than total: returns empty (no structural sampling needed)
         assert!(compute_structural_positions(5, 10).is_empty());
 
-        // Check positions are unique and within bounds
         let result = compute_structural_positions(1000, 20);
         let unique: std::collections::HashSet<usize> = result.iter().copied().collect();
         assert_eq!(unique.len(), result.len(), "Positions must be unique");
@@ -1387,15 +1381,114 @@ mod tests {
             ..Default::default()
         };
 
-        // Run multiple scans to catch any nondeterminism
         for _ in 0..5 {
             let scanner = Scanner::with_limits(dir.path(), limits.clone());
             let result = scanner.scan().unwrap();
-            let filenames = &result.evidence[0].representative_filenames;
+            let filenames = &result.evidence[0].filename_sample;
 
             let unique: std::collections::HashSet<_> = filenames.iter().collect();
             assert_eq!(unique.len(), filenames.len(), "No duplicate filenames in result");
             assert_eq!(filenames.len(), 20);
         }
+    }
+
+    #[test]
+    fn test_depth_field_populated() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("level1").join("level2");
+        fs::create_dir_all(&subdir).unwrap();
+        fs::write(dir.path().join("root.txt"), "x").unwrap();
+        fs::write(subdir.join("deep.txt"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let root_ev = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        assert_eq!(root_ev.depth, 0);
+
+        let level1 = result.evidence.iter().find(|e| e.name == "level1").unwrap();
+        assert_eq!(level1.depth, 1);
+
+        let level2 = result.evidence.iter().find(|e| e.name == "level2").unwrap();
+        assert_eq!(level2.depth, 2);
+    }
+
+    #[test]
+    fn test_is_empty_flag() {
+        let dir = tempdir().unwrap();
+        let empty_subdir = dir.path().join("empty");
+        fs::create_dir(&empty_subdir).unwrap();
+        fs::write(dir.path().join("file.txt"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let empty_ev = result.evidence.iter().find(|e| e.name == "empty").unwrap();
+        assert!(empty_ev.is_empty);
+        assert_eq!(empty_ev.file_count, 0);
+        assert_eq!(empty_ev.directory_count, 0);
+
+        let root_ev = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        assert!(!root_ev.is_empty);
+    }
+
+    #[test]
+    fn test_dominant_extensions_computed() {
+        let dir = tempdir().unwrap();
+        for i in 0..10 {
+            fs::write(dir.path().join(format!("file{:02}.mp3", i)), "x").unwrap();
+        }
+        fs::write(dir.path().join("readme.md"), "x").unwrap();
+        fs::write(dir.path().join("cover.jpg"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let evidence = &result.evidence[0];
+        assert!(!evidence.dominant_extensions.is_empty());
+        let top = &evidence.dominant_extensions[0];
+        assert_eq!(top.extension, "mp3");
+        assert_eq!(top.count, 10);
+        assert!((top.percentage - 83.33).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_identifier_summary_computed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("book_978-0-306-40615-7.pdf"), "x").unwrap();
+        fs::write(dir.path().join("song_550e8400-e29b-41d4-a716-446655440000.mp3"), "x").unwrap();
+        fs::write(dir.path().join("data_v1.2.3.bin"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let evidence = &result.evidence[0];
+        assert!(evidence.identifier_summary.total >= 3);
+        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Isbn));
+        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Uuid));
+        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Semver));
+    }
+
+    #[test]
+    fn test_schema_version_in_evidence() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("file.txt"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        assert_eq!(result.evidence[0].schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_scan_batch_id_generated() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("file.txt"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        assert!(!result.metadata.scan_batch_id.is_empty());
+        assert_eq!(result.evidence[0].schema_version, SCHEMA_VERSION);
     }
 }

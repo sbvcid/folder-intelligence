@@ -112,7 +112,7 @@ Examples:
 
 Examples:
 
-- representative filenames
+- representative filenames (filename_sample in v2.0) (sampled)
 - notable filenames
 - filename patterns
 - syntactic identifiers
@@ -368,28 +368,13 @@ Potential future interfaces include:
 
 MCP and GUI layers should wrap the core rather than become core dependencies.
 
-## 16. Current Implementation Constraints
+## 16. Current Implementation Status
 
-The current repository is an early Rust prototype with a Scanner, evidence types, JSONL CLI output, JSON Schema, and integration/unit tests. The existing design already establishes the core observation-vs-interpretation boundary.
+Phase 0 (scanner correctness): Complete. Phase 1 (evidence quality): Complete. Phase 2 (evidence schema v2.0): Complete.
 
-Before adding AI, MCP, SQLite, or filesystem actions, the scanner contract must be corrected and tested.
+The current repository is a Rust prototype with a Scanner, evidence types, JSONL CLI output with scan-level metadata header, JSON Schema, deterministic fixtures, and comprehensive tests.
 
-Known areas requiring verification or correction include:
-
-- actual enforcement of `max_depth`
-- global `max_total_files` enforcement
-- global `max_total_dirs` semantics
-- `max_files_per_dir` semantics
-- accurate definition of `total_size`
-- representative-file sampling quality
-- path normalization in `inspect`
-- inspect efficiency
-- scan error semantics
-- identifier noise and deduplication
-- Windows Unicode and filesystem edge cases
-- limit/timeout test coverage
-
-The README and schema must describe actual behavior rather than intended future behavior.
+Before adding AI, MCP, SQLite, or filesystem actions, the scanner contract is corrected and tested.
 
 ## 17. Non-Goals for the Current MVP
 

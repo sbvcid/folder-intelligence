@@ -1,5 +1,6 @@
-use crate::evidence::{DirectoryEvidence, ScanLimits};
+use crate::evidence::{ScanLimits, ScanResult};
 use crate::scanner::Scanner;
+use crate::classification::ClassificationProcessor;
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
@@ -18,6 +19,11 @@ pub enum Commands {
         path: PathBuf,
         output: Option<PathBuf>,
     },
+    Classify {
+        target: PathBuf,
+        category_root: PathBuf,
+        output: Option<PathBuf>,
+    },
     Schema {
         output: Option<PathBuf>,
     },
@@ -26,10 +32,9 @@ pub enum Commands {
 impl Cli {
     pub fn parse() -> Result<Self> {
         let mut args = pico_args::Arguments::from_env();
-        
-        // Handle subcommand
+
         let subcommand = args.subcommand()?.ok_or_else(|| anyhow!("No subcommand provided"))?;
-        
+
         let command = match subcommand.as_str() {
             "scan" => {
                 let path: PathBuf = args.free_from_os_str::<PathBuf, anyhow::Error>(|s| Ok(PathBuf::from(s)))?;
@@ -42,7 +47,7 @@ impl Cli {
                 let timeout = args.opt_value_from_str("--timeout")?.unwrap_or(3600);
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let quiet = args.contains("--quiet");
-                
+
                 Commands::Scan {
                     path,
                     limits: ScanLimits {
@@ -62,6 +67,12 @@ impl Cli {
                 let path: PathBuf = args.free_from_os_str::<PathBuf, anyhow::Error>(|s| Ok(PathBuf::from(s)))?;
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 Commands::Inspect { path, output }
+            }
+            "classify" => {
+                let target = args.value_from_os_str("--target", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let category_root = args.value_from_os_str("--category-root", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::Classify { target, category_root, output }
             }
             "schema" => {
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
@@ -87,7 +98,7 @@ impl Cli {
                     eprintln!("Scan complete.");
                 }
 
-                write_jsonl(&result.evidence, output)?;
+                write_jsonl(&result, output)?;
             }
             Commands::Inspect { path, output } => {
                 let limits = ScanLimits::default();
@@ -98,7 +109,40 @@ impl Cli {
                     return Err(anyhow!("No evidence found for path: {}", path.display()));
                 }
 
-                write_jsonl(&result.evidence, output)?;
+                write_jsonl(&result, output)?;
+            }
+            Commands::Classify { target, category_root, output } => {
+                let limits = ScanLimits::default();
+
+                // Scan target directory
+                let target_scanner = Scanner::with_limits(&target, limits.clone());
+                let target_scan = target_scanner.inspect_single()?;
+                let target_evidence = target_scan.evidence.into_iter().next()
+                    .ok_or_else(|| anyhow!("Failed to scan target path: {}", target.display()))?;
+
+                // Gather candidate directories from category root
+                let mut candidate_paths: Vec<PathBuf> = Vec::new();
+                if category_root.is_dir() {
+                    for entry in std::fs::read_dir(&category_root)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        if path.is_dir() && !path.is_symlink() {
+                            candidate_paths.push(path);
+                        }
+                    }
+                }
+
+                let input = crate::classification::ClassificationInput::from_directory_evidence(
+                    target_evidence,
+                    &candidate_paths,
+                    target_scan.metadata,
+                )?;
+
+                let processor = crate::classification::RuleBasedProcessor;
+                let classification_result = processor.classify(&input)?;
+
+                let json_output = serde_json::to_string_pretty(&classification_result)?;
+                write_output(&json_output, output)?;
             }
             Commands::Schema { output } => {
                 let schema = include_str!("../schemas/directory-evidence.json");
@@ -109,13 +153,16 @@ impl Cli {
     }
 }
 
-fn write_jsonl(evidence: &[DirectoryEvidence], output: Option<PathBuf>) -> Result<()> {
+fn write_jsonl(result: &ScanResult, output: Option<PathBuf>) -> Result<()> {
     let mut writer: Box<dyn std::io::Write> = match output {
         Some(path) => Box::new(std::fs::File::create(path)?),
         None => Box::new(std::io::stdout()),
     };
 
-    for e in evidence {
+    let meta_line = serde_json::to_string(&result.metadata)?;
+    writeln!(writer, "{}", meta_line)?;
+
+    for e in &result.evidence {
         let line = serde_json::to_string(e)?;
         writeln!(writer, "{}", line)?;
     }

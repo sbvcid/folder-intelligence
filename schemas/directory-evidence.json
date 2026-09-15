@@ -2,23 +2,29 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://folder-intelligence.org/schemas/directory-evidence.json",
   "title": "Directory Evidence",
-  "description": "Schema for directory evidence collected by folder-intelligence. Evidence represents observed facts about the filesystem without semantic interpretation.",
+  "description": "Schema for directory evidence collected by folder-intelligence v2.0. Evidence represents observed facts about the filesystem without semantic interpretation.",
   "type": "object",
   "required": [
     "path",
     "name",
+    "parent_path",
+    "depth",
     "file_count",
     "directory_count",
     "total_size",
     "extension_histogram",
+    "dominant_extensions",
+    "identifier_summary",
     "child_directory_names",
-    "representative_filenames",
+    "filename_sample",
     "notable_filenames",
-    "potential_identifiers",
+    "syntactic_identifiers",
     "text_file_presence",
+    "is_empty",
     "partial_scan",
     "scanned_at",
-    "scan_duration_ms"
+    "scan_duration_ms",
+    "schema_version"
   ],
   "properties": {
     "path": {
@@ -33,6 +39,11 @@
       "type": ["string", "null"],
       "description": "Parent directory path (null for root)"
     },
+    "depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Depth from scan root (0 = root directory)"
+    },
     "file_count": {
       "type": "integer",
       "minimum": 0,
@@ -43,7 +54,7 @@
       "minimum": 0,
       "description": "Number of subdirectories directly in this directory"
     },
-      "total_size": {
+    "total_size": {
       "type": "integer",
       "minimum": 0,
       "description": "Total size of direct files in this directory in bytes (not recursive)"
@@ -56,16 +67,26 @@
         "minimum": 0
       }
     },
+    "dominant_extensions": {
+      "type": "array",
+      "description": "Top extensions by frequency, with counts and percentages",
+      "items": {
+        "$ref": "#/$defs/dominant_extension"
+      }
+    },
+    "identifier_summary": {
+      "$ref": "#/$defs/identifier_summary"
+    },
     "child_directory_names": {
       "type": "array",
-      "description": "Names of immediate child directories",
+      "description": "Names of immediate child directories (bounded by max_child_dirs limit)",
       "items": {
         "type": "string"
       }
     },
-    "representative_filenames": {
+    "filename_sample": {
       "type": "array",
-      "description": "Representative filenames (sample of files in this directory)",
+      "description": "Bounded sample of filenames from this directory (renamed from representative_filenames)",
       "items": {
         "type": "string"
       }
@@ -77,15 +98,19 @@
         "type": "string"
       }
     },
-    "potential_identifiers": {
+    "syntactic_identifiers": {
       "type": "array",
-      "description": "Potential identifiers extracted from filenames (no semantic meaning assigned)",
+      "description": "Syntactic identifiers extracted from filenames (renamed from potential_identifiers; no semantic meaning assigned)",
       "items": {
-        "$ref": "#/$defs/potential_identifier"
+        "$ref": "#/$defs/syntactic_identifier"
       }
     },
     "text_file_presence": {
       "$ref": "#/$defs/text_file_presence"
+    },
+    "is_empty": {
+      "type": "boolean",
+      "description": "True when file_count == 0 AND directory_count == 0"
     },
     "partial_scan": {
       "type": "boolean",
@@ -100,10 +125,54 @@
       "type": "integer",
       "minimum": 0,
       "description": "Duration of scan for this directory in milliseconds"
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier (e.g. '2.0.0')"
     }
   },
   "$defs": {
-    "potential_identifier": {
+    "dominant_extension": {
+      "type": "object",
+      "required": ["extension", "count", "percentage"],
+      "properties": {
+        "extension": {
+          "type": "string",
+          "description": "File extension (lowercase, without dot) or '(no extension)'"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of files with this extension in the directory"
+        },
+        "percentage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percentage of files with this extension (0.0 if file_count is 0)"
+        }
+      }
+    },
+    "identifier_summary": {
+      "type": "object",
+      "required": ["total", "by_type"],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total number of syntactic identifiers found across all filenames"
+        },
+        "by_type": {
+          "type": "object",
+          "description": "Count of identifiers per identifier type",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "syntactic_identifier": {
       "type": "object",
       "required": ["value", "source_filename", "identifier_type"],
       "properties": {

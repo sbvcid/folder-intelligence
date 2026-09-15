@@ -13,6 +13,7 @@ A fast, low-resource filesystem evidence engine that observes and reports factua
 ## Features
 
 - **JSONL output** — One evidence record per directory, streamable and parseable
+- **Scan-level metadata** — Batch ID, schema version, timestamps, and scan stats
 - **Configurable limits** — Depth, file count, directory count, timeouts to prevent runaway scans
 - **Windows compatible** — Handles Unicode paths, long paths, special filesystem structures
 - **Low resource usage** — Streaming processing, bounded memory, parallel scanning
@@ -44,6 +45,9 @@ fi scan "/path/to/dir" --max-depth 10 --max-total-files 500000
 
 # Save to file
 fi scan "/path/to/dir" -o evidence.jsonl
+
+# Quiet mode (no stderr status messages)
+fi scan "/path/to/dir" --quiet
 ```
 
 ### Inspect a single directory
@@ -58,15 +62,37 @@ fi inspect "/path/to/dir"
 fi schema > directory-evidence.json
 ```
 
-## Evidence Structure
+## JSONL Output Format
 
-Each line of output is a `DirectoryEvidence` object:
+Output is JSONL (one JSON object per line). The first line is a `ScanMetadata` header, followed by one `DirectoryEvidence` record per directory:
+
+```text
+Line 1: ScanMetadata (with _type: "scan_metadata")
+Line 2..N: DirectoryEvidence (one per directory)
+```
+
+### ScanMetadata (header line)
+
+```json
+{
+  "_type": "scan_metadata",
+  "schema_version": "2.0.0",
+  "scan_batch_id": "18d564caaed7d98c",
+  "scan_started_at": 1700000000,
+  "root_path": "/absolute/path/to/root",
+  "limits": { "max_depth": 50, ... },
+  "stats": { "directories_scanned": 5, ... }
+}
+```
+
+### DirectoryEvidence
 
 ```json
 {
   "path": "/absolute/path/to/dir",
   "name": "dir",
   "parent_path": "/absolute/path/to",
+  "depth": 1,
   "file_count": 42,
   "directory_count": 5,
   "total_size": 104857600,
@@ -77,10 +103,17 @@ Each line of output is a `DirectoryEvidence` object:
     "mp3": 5,
     "(no extension)": 4
   },
+  "dominant_extensions": [
+    { "extension": "txt", "count": 15, "percentage": 35.71 }
+  ],
+  "identifier_summary": {
+    "total": 2,
+    "by_type": { "isbn": 1, "uuid": 1 }
+  },
   "child_directory_names": ["subdir1", "subdir2", "..."],
-  "representative_filenames": ["file1.txt", "document.pdf", "..."],
+  "filename_sample": ["file1.txt", "document.pdf", "..."],
   "notable_filenames": ["README.md", "LICENSE", "CHANGELOG.txt"],
-  "potential_identifiers": [
+  "syntactic_identifiers": [
     {
       "value": "978-0-306-40615-7",
       "source_filename": "book_978-0-306-40615-7.pdf",
@@ -96,11 +129,38 @@ Each line of output is a `DirectoryEvidence` object:
     "has_changelog": true,
     "text_files_found": ["README.md", "LICENSE", "CHANGELOG.txt"]
   },
+  "is_empty": false,
   "partial_scan": false,
   "scanned_at": 1700000000,
-  "scan_duration_ms": 42
+  "scan_duration_ms": 42,
+  "schema_version": "2.0.0"
 }
 ```
+
+### Field Reference
+
+| Field | Description |
+|-------|-------------|
+| `path` | Absolute path of the directory |
+| `name` | Directory name (last path component) |
+| `parent_path` | Parent directory path (null for root) |
+| `depth` | Depth from scan root (0 = root) |
+| `file_count` | Number of files directly in this directory |
+| `directory_count` | Number of subdirectories directly in this directory |
+| `total_size` | Total size of direct files in bytes (not recursive) |
+| `extension_histogram` | Frequency map of file extensions (lowercase, no dot) |
+| `dominant_extensions` | Top extensions by frequency with counts and percentages |
+| `identifier_summary` | Aggregate count of syntactic identifiers (total + by type) |
+| `child_directory_names` | Immediate child directory names (bounded by `max_child_dirs`) |
+| `filename_sample` | Bounded sample of filenames using tiered selection |
+| `notable_filenames` | Common/special filenames observed (README, LICENSE, etc.) |
+| `syntactic_identifiers` | Syntactic identifiers extracted from filenames (no semantic meaning) |
+| `text_file_presence` | Boolean flags for common text files (README, NFO, TXT, MD, LICENSE, CHANGELOG) |
+| `is_empty` | `true` when `file_count == 0 AND directory_count == 0` |
+| `partial_scan` | `true` when scan was truncated by limits |
+| `scanned_at` | Scan timestamp (Unix epoch seconds) |
+| `scan_duration_ms` | Duration to scan this directory in milliseconds |
+| `schema_version` | Schema version identifier (e.g. `"2.0.0"`) |
 
 ### Identifier Types (Observational Only)
 
@@ -115,6 +175,7 @@ The following patterns are detected in filenames **without assigning semantic me
 - `alphanumeric_code` — Patterns like SKU-001, ABC123
 - `email` — Email addresses
 - `url` — URLs
+- `custom` — Custom pattern (string value provided)
 
 **Important**: These are purely syntactic pattern matches. An ISBN in a filename doesn't mean the folder "is a book". It means a filename contains an ISBN-like string.
 

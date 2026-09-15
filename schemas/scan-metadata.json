@@ -1,0 +1,159 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://folder-intelligence.org/schemas/scan-metadata.json",
+  "title": "Scan Metadata",
+  "description": "Schema for scan-level metadata header emitted as the first line of JSONL output. Contains provenance and scan-level statistics.",
+  "type": "object",
+  "required": [
+    "_type",
+    "schema_version",
+    "scan_batch_id",
+    "scan_started_at",
+    "root_path",
+    "limits",
+    "stats"
+  ],
+  "properties": {
+    "_type": {
+      "type": "string",
+      "const": "scan_metadata",
+      "description": "Discriminator field to distinguish from DirectoryEvidence lines"
+    },
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier (e.g. '2.0.0')"
+    },
+    "scan_batch_id": {
+      "type": "string",
+      "description": "Unique identifier for this scan batch"
+    },
+    "scan_started_at": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Scan start timestamp (Unix epoch seconds)"
+    },
+    "root_path": {
+      "type": "string",
+      "description": "Absolute path of the scan root"
+    },
+    "limits": {
+      "$ref": "#/$defs/scan_limits"
+    },
+    "stats": {
+      "$ref": "#/$defs/scan_stats"
+    }
+  },
+  "$defs": {
+    "scan_limits": {
+      "type": "object",
+      "required": [
+        "max_depth",
+        "max_files_per_dir",
+        "max_total_files",
+        "max_total_dirs",
+        "max_representative_files",
+        "max_child_dirs",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "max_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum directory depth to traverse (0 = unlimited)"
+        },
+        "max_files_per_dir": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum number of files to process per directory"
+        },
+        "max_total_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum total files to process across entire scan"
+        },
+        "max_total_dirs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum total directories to process"
+        },
+        "max_representative_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum representative filenames to collect per directory"
+        },
+        "max_child_dirs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum child directory names to collect"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Timeout for entire scan in seconds (0 = no timeout)"
+        }
+      }
+    },
+    "scan_stats": {
+      "type": "object",
+      "required": [
+        "directories_scanned",
+        "files_encountered",
+        "bytes_scanned",
+        "dirs_skipped",
+        "files_skipped",
+        "errors",
+        "duration_ms"
+      ],
+      "properties": {
+        "directories_scanned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_encountered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes_scanned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dirs_skipped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "files_skipped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "message", "category"],
+            "properties": {
+              "path": { "type": "string" },
+              "message": { "type": "string" },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "permission_denied",
+                  "io_error",
+                  "path_too_long",
+                  "invalid_utf8",
+                  "symlink_loop",
+                  "limit_exceeded",
+                  "timeout",
+                  "other"
+                ]
+              }
+            }
+          }
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

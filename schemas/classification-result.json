@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://folder-intelligence.io/schemas/classification-result.json",
+  "title": "ClassificationResult",
+  "description": "Evidence-driven classification result produced by the rule-based classifier",
+  "type": "object",
+  "required": [
+    "target_path",
+    "decision",
+    "confidence",
+    "confidence_band",
+    "candidates_considered",
+    "supporting_evidence",
+    "alternatives",
+    "uncertainty",
+    "warnings",
+    "classified_at",
+    "schema_version"
+  ],
+  "properties": {
+    "target_path": {
+      "description": "Absolute path of the target directory",
+      "type": "string"
+    },
+    "decision": {
+      "description": "Classification decision",
+      "type": "string",
+      "enum": ["move_existing", "create_category", "leave_unclassified", "ask_user"]
+    },
+    "selected_candidate": {
+      "description": "Best candidate path (null for non-MOVE_EXISTING)",
+      "type": ["string", "null"]
+    },
+    "proposed_category_name": {
+      "description": "Proposed category name for CREATE_CATEGORY decision",
+      "type": ["string", "null"]
+    },
+    "confidence": {
+      "description": "0.0–1.0 confidence score for the decision",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "confidence_band": {
+      "description": "Confidence band derived from confidence thresholds",
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "candidates_considered": {
+      "description": "Number of candidate directories evaluated",
+      "type": "integer",
+      "minimum": 0
+    },
+    "supporting_evidence": {
+      "description": "Evidence comparisons supporting the top candidate",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["evidence_type", "description", "score"],
+        "properties": {
+          "evidence_type": {
+            "type": "string",
+            "description": "Type of evidence comparison"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable description of the evidence"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "alternatives": {
+      "description": "Other candidates with scores and rejection reasons",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_name", "candidate_path", "score", "rejection_reason"],
+        "properties": {
+          "candidate_name": {
+            "type": "string"
+          },
+          "candidate_path": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "rejection_reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "uncertainty": {
+      "description": "Uncertainty reasons reducing confidence",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["low_confidence", "ambiguous_candidates", "insufficient_precedent", "conflicting_evidence", "user_hint_conflict"]
+      }
+    },
+    "warnings": {
+      "description": "Non-fatal warnings (e.g., partial_scan on target/candidate)",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["partial_scan_target", "partial_scan_candidate"]
+      }
+    },
+    "classified_at": {
+      "description": "Unix timestamp of classification",
+      "type": "integer",
+      "minimum": 0
+    },
+    "schema_version": {
+      "description": "Schema version of the classification result",
+      "type": "string"
+    },
+    "provider": {
+      "description": "Classifier provider identifier (e.g., 'rule-based-v1.0')",
+      "type": ["string", "null"]
+    },
+    "model": {
+      "description": "Model identifier for AI-backed classifiers",
+      "type": ["string", "null"]
+    }
+  }
+}
