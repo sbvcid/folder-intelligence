@@ -196,9 +196,78 @@ Unresolved: 2 questions for clarification.
 Confidence: 0.73
 ```
 
-### 5D — Interactive Clarification (User)
+### 5D — User Clarification (Deterministic + User)
 
-Present unknown factors and ask for user input. Limited by `max_interactive_questions`.
+Present unresolved questions + blocked operations to user, collect structured answers, update `TaskIntent` constraints, and re-run recommendation.
+
+**Input**: `Recommendation` (from 5C) + `TaskAnalysis` (from 5B)
+
+**Output**: Updated `Recommendation` with fewer unresolved questions (or user confirmation)
+
+**Key boundary rules**:
+- User answers are converted to structured `UserDecision`s, NOT free-form text fed back into prompts
+- Each `UserDecision` maps to a `DecisionCategory` (PreserveExistingFolders, AutoDeleteTemps, etc.)
+- Decisions are applied deterministically to update `TaskIntent` constraints
+- Blocked operations (from constraint violations in 5C) are surfaced to the user — not silently stripped
+- After applying decisions, recommendation is recomputed from the original `TaskAnalysis` (no re-scan)
+- Clarification is bounded by `max_interactive_questions` from the intent constraints
+
+```rust
+pub struct UserDecision {
+    pub category: DecisionCategory,
+    pub answer: DecisionAnswer,        // Yes/No, Choice, Duration
+    pub question_id: String,
+    pub rationale: Option<String>,
+}
+
+pub enum DecisionCategory {
+    PreserveExistingFolders,
+    AutoDeleteTemps,
+    MergeDuplicates,
+    ArchiveOld,
+    TaxonomyChoice,
+    FileDisposition,
+    DuplicateHandling,
+    AmbiguousFileResolution,
+    CleanupScopeDefinition,
+}
+
+pub struct ClarificationEngine;
+impl ClarificationEngine {
+    pub fn start(&self, rec: &Recommendation) -> Vec<ClarificationQuestion> { ... }
+    pub fn blocked_operations(&self, rec: &Recommendation) -> Vec<String> { ... }
+    pub fn resolve_question(&self, questions: &[ClarificationQuestion], id: &str, answer: DecisionAnswer) -> Result<UserDecision, ClarificationError> { ... }
+    pub fn apply_decisions(&self, intent: &TaskIntent, decisions: &[UserDecision]) -> TaskIntent { ... }
+    pub fn recompute_recommendation(&self, intent: &TaskIntent, analysis: &TaskAnalysis) -> Result<Recommendation, RecommendationError> { ... }
+    pub fn is_complete(&self, rec: &Recommendation) -> bool { ... }
+    pub fn summarize(&self, rec: &Recommendation) -> String { ... }
+}
+```
+
+Decision loop:
+```
+Recommendation
+      ↓
+[ClarificationEngine::start]
+      ↓
+Unresolved questions + blocked operations
+      ↓
+User selects answers (structured)
+      ↓
+[ClarificationEngine::resolve_question]
+      ↓
+UserDecisions (structured, typed)
+      ↓
+[ClarificationEngine::apply_decisions]
+      ↓
+Updated TaskIntent (constraints updated)
+      ↓
+[ClarificationEngine::recompute_recommendation]
+      ↓
+New Recommendation with fewer questions
+      ↓
+Repeat until is_complete() = true, then proceed to 5E
+```
 
 ### 5E — Operation Plan Generation (AI)
 
@@ -223,6 +292,9 @@ Only with user approval. Execute operations, record `OperationLog`, generate und
 | Structure analysis | Deterministic | Pattern matching on evidence |
 | Recommendation synthesis | Deterministic + AI | Interpret evidence, explain rationale |
 | Constraint enforcement | Deterministic | Verify proposed operations against intent constraints |
+| Clarification questions | Deterministic | Generated from evidence gaps |
+| User decision mapping | Deterministic | Structured answer → constraint mapping |
+| Recomputation | Deterministic + AI | Re-run recommendation with updated intent |
 | User clarification | User | Resolve unknowns |
 | Plan generation | AI (5E) | Translate approved recommendations to operations |
 | Plan validation | Deterministic | Check constraints, no data loss |

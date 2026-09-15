@@ -28,6 +28,8 @@ pub use agent::{
     Recommendation, RecommendationStrategy, ProposedCategory, ProposedOperation,
     ConstraintCheck, ConstraintViolation, ClarificationQuestion, RecommendationWarning,
     RecommendationEngine, RecommendationError,
+    DecisionCategory, DecisionAnswer, UserDecision, ClarifiedIntent,
+    ClarificationEngine, ClarificationError,
 };
 
 #[cfg(feature = "network")]
