@@ -34,6 +34,7 @@ mod evidence_tests {
                 has_changelog: false,
                 text_files_found: vec!["README.md".to_string()],
             },
+            partial_scan: false,
             scanned_at: 1234567890,
             scan_duration_ms: 100,
         };

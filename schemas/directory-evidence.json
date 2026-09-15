@@ -16,6 +16,7 @@
     "notable_filenames",
     "potential_identifiers",
     "text_file_presence",
+    "partial_scan",
     "scanned_at",
     "scan_duration_ms"
   ],
@@ -85,6 +86,10 @@
     },
     "text_file_presence": {
       "$ref": "#/$defs/text_file_presence"
+    },
+    "partial_scan": {
+      "type": "boolean",
+      "description": "Whether this evidence was collected during a partial/truncated scan (incomplete)"
     },
     "scanned_at": {
       "type": "integer",

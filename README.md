@@ -96,6 +96,7 @@ Each line of output is a `DirectoryEvidence` object:
     "has_changelog": true,
     "text_files_found": ["README.md", "LICENSE", "CHANGELOG.txt"]
   },
+  "partial_scan": false,
   "scanned_at": 1700000000,
   "scan_duration_ms": 42
 }

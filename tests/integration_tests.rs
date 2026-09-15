@@ -416,37 +416,29 @@ fn test_symlink_not_followed() {
     fs::create_dir(&real_dir).unwrap();
     fs::write(real_dir.join("file.txt"), "content").unwrap();
 
-    let symlink_path = dir.path().join("link");
+    let _symlink_path = dir.path().join("link");
     
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(&real_dir, &symlink_path).unwrap();
-    }
-    
-    #[cfg(windows)]
-    {
-        // On Windows, symlinks require special privileges
-        // The scanner should skip symlinks/reparse points anyway
+        std::os::unix::fs::symlink(&real_dir, dir.path().join("link")).unwrap();
     }
 
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
     
-    // Root should have directory_count = 1 (the symlink) on systems where it's created
-    // But the symlink should not be traversed
     #[cfg(unix)]
     {
         let root_evidence = &result.evidence[0];
-        // Symlink is skipped, so directory_count should be 0 (real_dir is a real dir)
-        assert_eq!(root_evidence.directory_count, 1); // real_dir is a real directory
-        // Should only have evidence for root and real_dir (not the symlink)
+        // Symlink is skipped, so directory_count should be 1 (real_dir only)
+        assert_eq!(root_evidence.directory_count, 1);
+        // Should have evidence for root and real_dir (not the symlink)
         assert_eq!(result.evidence.len(), 2);
     }
-    
+
     #[cfg(windows)]
     {
-        let result = Scanner::new(dir.path()).scan().unwrap();
-        // On Windows without symlink capability, just verify it doesn't crash
+        // On Windows, just verify it doesn't crash
+        assert!(result.evidence.len() >= 1);
     }
 }
 
@@ -529,4 +521,130 @@ fn test_deeply_nested_directory_max_depth() {
     // level1 should NOT exist (depth 2 is the limit)
     let level1_exists = result.evidence.iter().any(|e| e.name == "level1");
     assert!(!level1_exists);
+}
+
+#[test]
+fn test_max_files_per_dir_still_discovers_subdirs() {
+    // Files before subdirectories should not block directory discovery
+    let dir = tempdir().unwrap();
+    // Create 100 files first (will hit max_files_per_dir=5)
+    for i in 0..100 {
+        fs::write(dir.path().join(format!("file{}.txt", i)), "content").unwrap();
+    }
+    // Create subdirectories after the files
+    for i in 0..5 {
+        let subdir = dir.path().join(format!("subdir{}", i));
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("inner.txt"), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        max_files_per_dir: 5,
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    let evidence = &result.evidence[0];
+    // file_count should be limited
+    assert_eq!(evidence.file_count, 5);
+    // directory_count should still see all 5 subdirectories
+    assert_eq!(evidence.directory_count, 5);
+    // All subdirectories should be in evidence (max_child_dirs default is 500)
+    assert_eq!(result.evidence.len(), 6); // root + 5 subdirs
+}
+
+#[test]
+fn test_timeout_during_large_directory_scan() {
+    let dir = tempdir().unwrap();
+    for i in 0..100 {
+        fs::write(dir.path().join(format!("file{}.txt", i)), "content").unwrap();
+    }
+
+    let limits = ScanLimits {
+        timeout_seconds: 60, // Reasonable timeout that won't fire for small directories
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    // Should complete without errors (small directory, fast scan)
+    assert!(result.stats.errors.is_empty());
+    assert_eq!(result.evidence.len(), 1);
+}
+
+#[test]
+fn test_root_not_a_directory_file() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("not_a_dir.txt");
+    fs::write(&file_path, "content").unwrap();
+
+    let scanner = Scanner::new(&file_path);
+    let result = scanner.scan();
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("not a directory"));
+}
+
+#[test]
+fn test_inspect_single_nonexistent_path() {
+    let dir = tempdir().unwrap();
+    let nonexistent = dir.path().join("does_not_exist");
+    let scanner = Scanner::new(&nonexistent);
+    let result = scanner.inspect_single();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_inspect_single_not_a_directory() {
+    let dir = tempdir().unwrap();
+    let file_path = dir.path().join("not_a_dir.txt");
+    fs::write(&file_path, "content").unwrap();
+
+    let scanner = Scanner::new(&file_path);
+    let result = scanner.inspect_single();
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_partial_scan_indicator() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("file.txt"), "content").unwrap();
+
+    let scanner = Scanner::new(dir.path());
+    let result = scanner.scan().unwrap();
+
+    let evidence = &result.evidence[0];
+    // Normal scan should have partial_scan = false
+    assert!(!evidence.partial_scan);
+}
+
+#[test]
+fn test_max_files_per_dir_limits_files_not_dirs() {
+    // When max_files_per_dir is hit, directories should still be counted
+    let dir = tempdir().unwrap();
+    // Create files that will hit the limit
+    for i in 0..10 {
+        fs::write(dir.path().join(format!("file{}.txt", i)), "x").unwrap();
+    }
+    // Create subdirectory after files
+    fs::create_dir(dir.path().join("subdir")).unwrap();
+
+    let limits = ScanLimits {
+        max_files_per_dir: 5,
+        ..Default::default()
+    };
+
+    let scanner = Scanner::with_limits(dir.path(), limits);
+    let result = scanner.scan().unwrap();
+
+    let evidence = &result.evidence[0];
+    assert_eq!(evidence.file_count, 5);
+    // Even though files are limited, the subdirectory should still be discovered
+    assert_eq!(evidence.directory_count, 1);
+    assert!(evidence.child_directory_names.contains(&"subdir".to_string()));
+    // Subdirectory should be scanned
+    assert_eq!(result.evidence.len(), 2);
 }

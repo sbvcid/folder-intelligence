@@ -53,7 +53,6 @@ impl Cli {
                         max_representative_files,
                         max_child_dirs,
                         timeout_seconds: timeout,
-                        ..Default::default()
                     },
                     output,
                     quiet,

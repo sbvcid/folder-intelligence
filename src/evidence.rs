@@ -21,7 +21,7 @@ pub struct DirectoryEvidence {
     pub total_size: u64,
     /// Histogram of file extensions (lowercase, without dot)
     pub extension_histogram: HashMap<String, u64>,
-    /// Names of immediate child directories
+    /// Names of immediate child directories (bounded by max_child_dirs limit)
     pub child_directory_names: Vec<String>,
     /// Representative filenames (sample of files in this directory)
     pub representative_filenames: Vec<String>,
@@ -31,6 +31,8 @@ pub struct DirectoryEvidence {
     pub potential_identifiers: Vec<PotentialIdentifier>,
     /// Presence of common text files
     pub text_file_presence: TextFilePresence,
+    /// Whether this evidence was collected during a partial/truncated scan (incomplete)
+    pub partial_scan: bool,
     /// Scan timestamp (Unix epoch seconds)
     pub scanned_at: u64,
     /// Duration of scan for this directory in milliseconds
@@ -107,8 +109,6 @@ pub struct ScanLimits {
     pub max_total_files: usize,
     /// Maximum total directories to process
     pub max_total_dirs: usize,
-    /// Maximum size of a single file to read metadata from (bytes)
-    pub max_file_size: u64,
     /// Maximum representative filenames to collect per directory
     pub max_representative_files: usize,
     /// Maximum child directory names to collect
@@ -124,7 +124,6 @@ impl Default for ScanLimits {
             max_files_per_dir: 10_000,
             max_total_files: 1_000_000,
             max_total_dirs: 100_000,
-            max_file_size: 10 * 1024 * 1024 * 1024, // 10 GB
             max_representative_files: 20,
             max_child_dirs: 500,
             timeout_seconds: 3600, // 1 hour
