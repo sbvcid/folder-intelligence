@@ -367,6 +367,7 @@ fn scan_single_directory(
             let files_encountered = state.stats.files_encountered.load(Ordering::Relaxed);
             if files_encountered >= state.limits.max_total_files as u64 {
                 state.stats.files_skipped.fetch_add(1, Ordering::Relaxed);
+                partial = true;
                 continue;
             }
             file_count += 1;

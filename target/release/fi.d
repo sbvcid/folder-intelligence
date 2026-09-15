@@ -1,1 +1,0 @@
-C:\git\folder-intelligence\target\release\fi.exe: C:\git\folder-intelligence\schemas\directory-evidence.json C:\git\folder-intelligence\src\cli.rs C:\git\folder-intelligence\src\evidence.rs C:\git\folder-intelligence\src\lib.rs C:\git\folder-intelligence\src\main.rs C:\git\folder-intelligence\src\scanner.rs
