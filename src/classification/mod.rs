@@ -4,6 +4,8 @@ pub mod selector;
 pub mod result;
 pub mod decision;
 pub mod processor;
+pub mod ai_provider;
+pub mod mock_ai;
 
 #[allow(unused_imports)]
 pub use input::{
@@ -23,3 +25,10 @@ pub use result::{
 pub use decision::DecisionEngine;
 #[allow(unused_imports)]
 pub use processor::{ClassificationProcessor, RuleBasedProcessor};
+#[allow(unused_imports)]
+pub use ai_provider::{
+    AiClassifier, AiClassificationConstraints, AiClassificationError, AiClassificationRequest,
+    build_request, validate_ai_result,
+};
+#[allow(unused_imports)]
+pub use mock_ai::MockAiClassifier;

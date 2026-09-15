@@ -1,6 +1,7 @@
 use crate::evidence::{ScanLimits, ScanResult};
 use crate::scanner::Scanner;
 use crate::classification::ClassificationProcessor;
+use crate::classification::AiClassifier;
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
@@ -22,6 +23,12 @@ pub enum Commands {
     Classify {
         target: PathBuf,
         category_root: PathBuf,
+        output: Option<PathBuf>,
+    },
+    ClassifyAi {
+        target: PathBuf,
+        category_root: PathBuf,
+        model: String,
         output: Option<PathBuf>,
     },
     Schema {
@@ -73,6 +80,13 @@ impl Cli {
                 let category_root = args.value_from_os_str("--category-root", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 Commands::Classify { target, category_root, output }
+            }
+            "classify-ai" => {
+                let target = args.value_from_os_str("--target", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let category_root = args.value_from_os_str("--category-root", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let model = args.opt_value_from_str("--model")?.unwrap_or_else(|| "mock".to_string());
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::ClassifyAi { target, category_root, model, output }
             }
             "schema" => {
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
@@ -142,6 +156,45 @@ impl Cli {
                 let classification_result = processor.classify(&input)?;
 
                 let json_output = serde_json::to_string_pretty(&classification_result)?;
+                write_output(&json_output, output)?;
+            }
+            Commands::ClassifyAi { target, category_root, model, output } => {
+                let limits = ScanLimits::default();
+
+                let target_scanner = Scanner::with_limits(&target, limits.clone());
+                let target_scan = target_scanner.inspect_single()?;
+                let target_evidence = target_scan.evidence.into_iter().next()
+                    .ok_or_else(|| anyhow!("Failed to scan target path: {}", target.display()))?;
+
+                let mut candidate_paths: Vec<PathBuf> = Vec::new();
+                if category_root.is_dir() {
+                    for entry in std::fs::read_dir(&category_root)? {
+                        let entry = entry?;
+                        let path = entry.path();
+                        if path.is_dir() && !path.is_symlink() {
+                            candidate_paths.push(path);
+                        }
+                    }
+                }
+
+                let input = crate::classification::ClassificationInput::from_directory_evidence(
+                    target_evidence,
+                    &candidate_paths,
+                    target_scan.metadata,
+                )?;
+
+                let processor = crate::classification::RuleBasedProcessor;
+                let baseline = processor.classify(&input)?;
+
+                let ai_classifier = if model == "mock" {
+                    crate::classification::MockAiClassifier::default()
+                } else {
+                    return Err(anyhow!("Provider '{}' not available in Phase 4A. Use --model mock", model));
+                };
+
+                let ai_result = ai_classifier.classify(&input, &baseline)?;
+
+                let json_output = serde_json::to_string_pretty(&ai_result)?;
                 write_output(&json_output, output)?;
             }
             Commands::Schema { output } => {

@@ -13,7 +13,9 @@ pub use classification::{
     TargetEvidence, CandidateEvidence, CandidateSummary, ClassificationConfig, UserHints,
     ClassificationInput, EvidenceComparator, EvidenceComparison, ComparisonType,
     CandidateSelector, CandidateScore, DecisionEngine, ClassificationProcessor,
-    ClassificationResult, ClassificationDecision, ConfidenceBand, SupportingEvidence,
-    AlternativeCandidate, UncertaintyReason, Warning,
+    RuleBasedProcessor, ClassificationResult, ClassificationDecision, ConfidenceBand,
+    SupportingEvidence, AlternativeCandidate, UncertaintyReason, Warning,
+    AiClassifier, AiClassificationConstraints, AiClassificationError, AiClassificationRequest,
+    build_request, validate_ai_result, MockAiClassifier,
     SAMPLE_CHILD_DIRS, MAX_CANDIDATES,
 };
