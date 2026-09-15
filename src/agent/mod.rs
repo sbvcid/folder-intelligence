@@ -1,5 +1,6 @@
 pub mod intent;
 pub mod analysis;
+pub mod recommendation;
 
 #[allow(unused_imports)]
 pub use intent::{
@@ -10,4 +11,10 @@ pub use analysis::{
     TaskAnalysis, EvidenceAnalyzer, StructureSummary, ContentGroup, ContentType,
     Anomaly, AnomalyType, Ambiguity, AmbiguityReason, EvidenceGap, GapType,
     CandidateCategory, AnalyzerError,
+};
+#[allow(unused_imports)]
+pub use recommendation::{
+    Recommendation, RecommendationStrategy, ProposedCategory, ProposedOperation,
+    ConstraintCheck, ConstraintViolation, ClarificationQuestion, RecommendationWarning,
+    RecommendationEngine, RecommendationError,
 };

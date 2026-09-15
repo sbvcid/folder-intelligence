@@ -22,7 +22,12 @@ pub use classification::{
 };
 pub use agent::{
     TaskIntent, Goal, ConstraintSet, CleanRule, TaskIntentParser, IntentParseError,
-    TaskAnalysis, EvidenceAnalyzer, AnalyzerError,
+    TaskAnalysis, EvidenceAnalyzer, StructureSummary, ContentGroup, ContentType,
+    Anomaly, AnomalyType, Ambiguity, AmbiguityReason, EvidenceGap, GapType,
+    CandidateCategory, AnalyzerError,
+    Recommendation, RecommendationStrategy, ProposedCategory, ProposedOperation,
+    ConstraintCheck, ConstraintViolation, ClarificationQuestion, RecommendationWarning,
+    RecommendationEngine, RecommendationError,
 };
 
 #[cfg(feature = "network")]

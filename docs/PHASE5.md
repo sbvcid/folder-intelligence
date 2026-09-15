@@ -143,9 +143,40 @@ Run Scanner → Evidence on the scope. Then run multiple analyses:
 - Temporal analysis: age distribution of files
 - Project structure detection: identify coherent project folders vs. loose files
 
-### 5C — AI Reasoning & Recommendation (AI)
+### 5C — AI Reasoning & Recommendation (Deterministic + AI)
 
-Synthesize evidence into recommendations. Must explain rationale.
+Synthesize TaskIntent + TaskAnalysis + ClassificationResult into a `Recommendation`.
+
+**Input**: `TaskIntent` + `TaskAnalysis` (produced by 5B)
+
+**Output**: `Recommendation` (NOT `OperationPlan` — that is 5E)
+
+**Key boundary rules**:
+- AI/recommender consumes evidence only — never modifies filesystem
+- Constraints are **deterministically enforced** after recommendation generation:
+  - `auto_delete_temps = false` → AI suggestions to delete temp files are blocked, not rejected
+  - `preserve_existing_folders = true` → existing directory structure preserved
+  - `archive_old = Some(duration)` → only archive if explicitly configured
+- If no candidate categories exist, AI can propose new ones but cannot fabricate filesystem evidence
+- Recommendation may produce `unresolved_questions` for 5D clarification
+- If a constraint violation occurs, `constraint_violation` is set and the blocking operations are removed
+- Provider failure or malformed AI response falls back to deterministic recommendation
+
+```rust
+pub struct Recommendation {
+    pub id: String,
+    pub strategy: RecommendationStrategy,
+    pub rationale: String,                    // AI-generated explanation
+    pub proposed_categories: Vec<ProposedCategory>,
+    pub proposed_operations: Vec<ProposedOperation>,  // High-level, NOT executable paths
+    pub unresolved_questions: Vec<ClarificationQuestion>,
+    pub confidence: f64,                      // 0.0–1.0
+    pub constraint_checks: Vec<ConstraintCheck>,     // Evidence constraints were verified
+    pub constraint_violation: Option<ConstraintViolation>,  // Set if constraints were violated
+    pub warnings: Vec<RecommendationWarning>,
+    pub generated_at: u64,
+}
+```
 
 Example:
 ```
@@ -159,6 +190,10 @@ I scanned Downloads. Found 5 major content types:
 83 files are ambiguous (generic names, mixed extensions).
 Recommended: create 5 category folders, move matched files,
 leave ambiguous files in place.
+
+Constraint violation: auto_delete_temps=false — temp file deletion blocked.
+Unresolved: 2 questions for clarification.
+Confidence: 0.73
 ```
 
 ### 5D — Interactive Clarification (User)
@@ -186,9 +221,10 @@ Only with user approval. Execute operations, record `OperationLog`, generate und
 | Evidence extraction | Deterministic | Scanner is deterministic |
 | Classification | AI + Deterministic baseline | Rule-based baseline + AI refinement |
 | Structure analysis | Deterministic | Pattern matching on evidence |
-| Recommendation synthesis | AI | Interpret evidence, explain rationale |
+| Recommendation synthesis | Deterministic + AI | Interpret evidence, explain rationale |
+| Constraint enforcement | Deterministic | Verify proposed operations against intent constraints |
 | User clarification | User | Resolve unknowns |
-| Plan generation | AI | Translate recommendations to operations |
+| Plan generation | AI (5E) | Translate approved recommendations to operations |
 | Plan validation | Deterministic | Check constraints, no data loss |
 | Plan preview | Deterministic | Render before/after tree |
 | Apply | User approval + Deterministic executor | Safety: requires explicit approval |
