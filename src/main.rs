@@ -2,6 +2,7 @@ mod cli;
 mod evidence;
 mod scanner;
 mod classification;
+mod agent;
 
 use cli::Cli;
 use anyhow::Result;

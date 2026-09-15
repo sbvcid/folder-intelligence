@@ -2,6 +2,7 @@ pub mod cli;
 pub mod evidence;
 pub mod scanner;
 pub mod classification;
+pub mod agent;
 
 pub use evidence::{
     DirectoryEvidence, DominantExtension, ErrorCategory, IdentifierSummary, IdentifierType,
@@ -19,6 +20,7 @@ pub use classification::{
     build_request, validate_ai_result, RealAiClassifier, MockAiClassifier,
     SAMPLE_CHILD_DIRS, MAX_CANDIDATES,
 };
+pub use agent::{TaskIntent, Goal, ConstraintSet, CleanRule, TaskIntentParser, IntentParseError};
 
 #[cfg(feature = "network")]
 pub use classification::{OpenAiProvider, OpenAiProviderConfig};

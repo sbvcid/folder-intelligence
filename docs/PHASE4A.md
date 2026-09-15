@@ -263,3 +263,65 @@ other 4xx/5xx
 - Cost/latency tracking
 - Operation log, planning, validation, preview, apply, undo
 - Prompt engineering frameworks beyond structured JSON input
+
+### Phase 4B Status
+
+- `OpenAiProvider` + `OpenAiProviderConfig` implemented (src/classification/openai_provider.rs)
+- Implements `AiClassifier` trait, OpenAI Chat Completions API with JSON schema response_format
+- Hallucination prevention validates `selected_candidate`, `alternatives`, `proposed_category_name`
+- Error mapping: timeout/401/403/429/provider errors
+- `RealAiClassifier` enum dispatches Mock or OpenAi provider
+- CLI `--api-key`, `--base-url` flags for `classify-ai`
+- `network` cargo feature + `reqwest` (blocking) dependency
+- 115 tests pass, clippy clean, release build succeeds
+
+---
+
+## Phase 5 — Intent & Planning Layer
+
+### Revised Vision
+
+Phase 5 is **not** a filesystem operations phase. It is an **intent-driven planning layer** that sits above the filesystem intelligence substrate (Phases 0–4B).
+
+```
+User (natural language)
+    ↓
+Task Intent
+    ↓
+Evidence Analysis (Phases 0–4B substrate)
+    ↓
+AI Reasoning & Recommendation
+    ↓
+User Interaction (clarify / explain)
+    ↓
+Operation Plan
+    ↓
+Validate → Preview → User Approval → Apply / Undo
+```
+
+The user does **not** say "classify into categories." The user says things like:
+
+- "Help me organize Downloads."
+- "Organize by 'Work / Personal / Entertainment'."
+- "Reorganize my project folders."
+
+### Phase 5 Sub-phases
+
+| Sub-phase | Description | Deterministic / AI / User |
+|-----------|-------------|---------------------------|
+| **5A** | Natural-language intent parsing | AI + Deterministic |
+| **5B** | Evidence-driven analysis | Deterministic (Phases 0–4B) |
+| **5C** | AI reasoning & recommendation | AI |
+| **5D** | Interactive clarification | User |
+| **5E** | Operation plan generation | AI |
+| **5F** | Validation & preview | Deterministic |
+| **5G** | Apply / Undo | User approval + Deterministic |
+
+### Key Principles
+
+1. **AI is the orchestration/reasoning layer**, not a simple classifier
+2. **ClassificationResult (Phase 3/4B)** is a tool within the AI reasoning pipeline, not an end product
+3. **Multiple analysis modes**: classification, structure analysis, duplicate detection, orphan detection, naming inconsistency
+4. **Explainability**: AI must explain its recommendations before proposing actions
+5. **User control**: No filesystem mutation without explicit user approval
+6. **Safe undo**: Every applied plan must be reversible

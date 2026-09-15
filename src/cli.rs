@@ -2,6 +2,7 @@ use crate::evidence::{ScanLimits, ScanResult};
 use crate::scanner::Scanner;
 use crate::classification::ClassificationProcessor;
 use crate::classification::AiClassifier;
+use crate::agent::TaskIntentParser;
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
@@ -34,6 +35,11 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
     Schema {
+        output: Option<PathBuf>,
+    },
+    Intent {
+        request: String,
+        scope: Option<PathBuf>,
         output: Option<PathBuf>,
     },
 }
@@ -95,6 +101,14 @@ impl Cli {
             "schema" => {
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 Commands::Schema { output }
+            }
+            "intent" => {
+                let request = args
+                    .free_from_str::<String>()
+                    .map_err(|_| anyhow!("No intent request provided"))?;
+                let scope = args.opt_value_from_os_str("--scope", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::Intent { request, scope, output }
             }
             _ => return Err(anyhow!("Unknown subcommand: {}", subcommand)),
         };
@@ -224,6 +238,16 @@ impl Cli {
             Commands::Schema { output } => {
                 let schema = include_str!("../schemas/directory-evidence.json");
                 write_output(schema, output)?;
+            }
+            Commands::Intent { request, scope, output } => {
+                let parser = if let Some(s) = scope {
+                    TaskIntentParser::new(s)
+                } else {
+                    TaskIntentParser::default()
+                };
+                let intent = parser.parse(&request)?;
+                let json_output = serde_json::to_string_pretty(&intent)?;
+                write_output(&json_output, output)?;
             }
         }
         Ok(())
