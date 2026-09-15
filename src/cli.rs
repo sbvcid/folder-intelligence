@@ -57,6 +57,11 @@ pub enum Commands {
         scope: Option<PathBuf>,
         output: Option<PathBuf>,
     },
+    Plan {
+        request: String,
+        scope: Option<PathBuf>,
+        output: Option<PathBuf>,
+    },
 }
 
 impl Cli {
@@ -148,6 +153,14 @@ impl Cli {
                 let scope = args.opt_value_from_os_str("--scope", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 Commands::Clarify { request, scope, output }
+            }
+            "plan" => {
+                let request = args
+                    .free_from_str::<String>()
+                    .map_err(|_| anyhow!("No intent request provided"))?;
+                let scope = args.opt_value_from_os_str("--scope", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::Plan { request, scope, output }
             }
             _ => return Err(anyhow!("Unknown subcommand: {}", subcommand)),
         };
@@ -329,6 +342,23 @@ impl Cli {
                 let clarifier = crate::agent::ClarificationEngine;
                 let summary = clarifier.summarize(&recommendation);
                 write_output(&summary, output)?;
+            }
+            Commands::Plan { request, scope, output } => {
+                let parser = if let Some(s) = scope {
+                    TaskIntentParser::new(s)
+                } else {
+                    TaskIntentParser::default()
+                };
+                let intent = parser.parse(&request)?;
+                let analyzer = crate::agent::EvidenceAnalyzer;
+                let analysis = analyzer.analyze(&intent)?;
+                let engine = crate::agent::RecommendationEngine;
+                let recommendation = engine.recommend(&intent, &analysis)?;
+
+                let generator = crate::agent::PlanGenerator;
+                let plan = generator.generate(&recommendation, &analysis, &[])?;
+                let preview = generator.preview(&plan);
+                write_output(&preview, output)?;
             }
         }
         Ok(())

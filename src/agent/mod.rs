@@ -2,6 +2,7 @@ pub mod intent;
 pub mod analysis;
 pub mod recommendation;
 pub mod clarification;
+pub mod plan;
 
 #[allow(unused_imports)]
 pub use intent::{
@@ -24,4 +25,9 @@ pub use clarification::{
     DecisionCategory, DecisionAnswer, UserDecision, ClarifiedIntent,
     ClarificationEngine, ClarificationError,
     apply_evidence_gaps_to_questions,
+};
+#[allow(unused_imports)]
+pub use plan::{
+    FileSystemOperation, OperationPlan, EstimatedImpact,
+    ValidationWarning, WarningType, PlanGenerator, PlanError,
 };

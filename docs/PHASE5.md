@@ -269,18 +269,60 @@ New Recommendation with fewer questions
 Repeat until is_complete() = true, then proceed to 5E
 ```
 
-### 5E — Operation Plan Generation (AI)
+### 5E — Operation Plan Generation (Deterministic resolver)
 
-Generate `OperationPlan` with concrete filesystem operations. Dry-run by default.
+Translate approved `Recommendation` into concrete `OperationPlan` with `FileSystemOperation`s.
 
-### 5F — Validation & Preview (Deterministic)
+**Input**: `Recommendation` (approved) + `TaskAnalysis` (cached)
 
-Validate the plan: no conflicting operations, paths exist, no data loss.
-Preview the plan: show before/after tree, impacted file counts.
+**Output**: `OperationPlan` (NOT applied — dry-run only)
 
-### 5G — Apply / Undo (User approval + Deterministic)
+**Key boundary rules**:
+- **5E never executes filesystem operations** — only generates the plan
+- Destination paths are generated **deterministically from category names**, not from AI
+- AI provides `to_category` name (e.g., "document_storage") → 5E resolves to `scope.join("Documents")`
+- Validation: source exists, destination within scope, no source=dest, no conflicting destinations
+- All operations are dry-run by default
+- Partial scan results generate validation warnings
 
-Only with user approval. Execute operations, record `OperationLog`, generate undo script.
+```rust
+pub enum FileSystemOperation {
+    Move { source: PathBuf, dest: PathBuf },
+    CreateDir { path: PathBuf },
+    Delete { path: PathBuf, reason: String },
+}
+
+pub struct OperationPlan {
+    pub id: String,
+    pub recommendation_id: String,
+    pub scope: PathBuf,
+    pub operations: Vec<FileSystemOperation>,
+    pub estimated_impact: EstimatedImpact,
+    pub validation_warnings: Vec<ValidationWarning>,
+    pub has_conflicts: bool,
+    pub dry_run: bool,
+    pub created_at: u64,
+}
+```
+
+Example:
+```
+Operation Plan: plan-12345
+Scope: /home/user/Downloads
+Dry run: Yes
+
+=== Create Directories ===
+  + /home/user/Downloads/Documents
+  + /home/user/Downloads/Images
+
+=== File/Directory Moves ===
+  /home/user/Downloads/doc1.pdf → /home/user/Downloads/Documents
+  /home/user/Downloads/photo1.jpg → /home/user/Downloads/Images
+
+=== Estimated Impact ===
+  Files moved: 4
+  Dirs created: 2
+```
 
 ## Layering: What's Deterministic vs AI vs User
 
@@ -296,7 +338,7 @@ Only with user approval. Execute operations, record `OperationLog`, generate und
 | User decision mapping | Deterministic | Structured answer → constraint mapping |
 | Recomputation | Deterministic + AI | Re-run recommendation with updated intent |
 | User clarification | User | Resolve unknowns |
-| Plan generation | AI (5E) | Translate approved recommendations to operations |
+| Plan generation | Deterministic resolver (5E) | Path resolution from category names, validation, dry-run — NO filesystem execution |
 | Plan validation | Deterministic | Check constraints, no data loss |
 | Plan preview | Deterministic | Render before/after tree |
 | Apply | User approval + Deterministic executor | Safety: requires explicit approval |
@@ -313,16 +355,25 @@ Only with user approval. Execute operations, record `OperationLog`, generate und
 ## CLI Interface (Phase 5)
 
 ```bash
-# Natural language request
-fi plan "Help me organize Downloads"
+# Parse intent only
+fi intent "Help me organize Downloads"
 
-# Interactive mode
+# Analyze filesystem + evidence
+fi analyze "Organize Downloads" --scope ./Downloads
+
+# Generate recommendation (5C)
+fi recommend "Organize Downloads by category" --scope ./Downloads
+
+# Show summary with questions + blocked operations (5D)
+fi clarify "Organize Downloads" --scope ./Downloads
+
+# Generate operation plan from recommendation (5E)
+fi plan "Organize Downloads by category" --scope ./Downloads
+
+# Interactive mode (planned for 5D+5E)
 fi plan "Organize by Work / Personal / Entertainment" --interactive
 
-# Show analysis only
-fi plan "Organize Downloads" --analyze-only
-
-# Apply with approval
+# Apply with approval (5G — planned)
 fi plan "Organize Downloads" --apply
 ```
 

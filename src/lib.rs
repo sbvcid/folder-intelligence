@@ -30,6 +30,8 @@ pub use agent::{
     RecommendationEngine, RecommendationError,
     DecisionCategory, DecisionAnswer, UserDecision, ClarifiedIntent,
     ClarificationEngine, ClarificationError,
+    FileSystemOperation, OperationPlan, EstimatedImpact,
+    ValidationWarning, WarningType, PlanGenerator, PlanError,
 };
 
 #[cfg(feature = "network")]
