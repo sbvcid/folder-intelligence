@@ -239,9 +239,10 @@ impl PlanGenerator {
                     let moved_len = moved.len();
 
                     operations.extend(moved.into_iter().map(|(source, _size)| {
+                        let file_name = source.file_name().map(PathBuf::from).unwrap_or_default();
                         FileSystemOperation::Move {
                             source,
-                            dest: dest.clone(),
+                            dest: dest.join(file_name),
                         }
                     }));
 

@@ -156,7 +156,7 @@ impl PlanValidator {
                             dest.display()
                         ));
                         summary.conflicts += 1;
-                    } else if dest.is_dir() && source.is_file() {
+                    } else {
                         let parent_dest = dest.parent().unwrap_or(dest);
                         if !parent_dest.exists() {
                             if let Some(&idx) = create_dir_indices.get(parent_dest) {

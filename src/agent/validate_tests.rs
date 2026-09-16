@@ -578,3 +578,109 @@ impl ValidationResultExt for ValidationResult {
             .any(|v| v.status.is_blocked())
     }
 }
+
+#[test]
+fn test_validate_move_dest_file_exists_conflict() {
+    let dir = tempdir().unwrap();
+    let scope = dir.path().join("scope");
+    fs::create_dir_all(&scope).unwrap();
+    fs::create_dir_all(scope.join("Documents")).unwrap();
+
+    let source = scope.join("readme.txt");
+    let dest = scope.join("Documents").join("readme.txt");
+    fs::write(&source, "original").unwrap();
+    fs::write(&dest, "existing").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-conflict".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: scope.clone(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: Vec::new(),
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let validator = PlanValidator::default();
+    let result = validator.validate(&plan);
+
+    assert!(
+        result.summary.conflicts > 0,
+        "dest file already exists must be CONFLICT"
+    );
+    assert!(
+        result
+            .validated_operations
+            .iter()
+            .any(|v| v.status.is_conflict()),
+        "per-operation status must be Conflict"
+    );
+}
+
+#[test]
+fn test_validate_move_creates_parent_dep() {
+    let dir = tempdir().unwrap();
+    let scope = dir.path().join("scope");
+    fs::create_dir_all(&scope).unwrap();
+    fs::write(scope.join("doc.pdf"), "content").unwrap();
+
+    let dest = scope.join("Documents").join("doc.pdf");
+
+    let plan = OperationPlan {
+        id: "test-parent-dep".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: scope.clone(),
+        operations: vec![
+            FileSystemOperation::CreateDir {
+                path: scope.join("Documents"),
+            },
+            FileSystemOperation::Move {
+                source: scope.join("doc.pdf"),
+                dest: dest.clone(),
+            },
+        ],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 1,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: Vec::new(),
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let validator = PlanValidator::default();
+    let result = validator.validate(&plan);
+
+    let move_idx = plan
+        .operations
+        .iter()
+        .position(|op| matches!(op, FileSystemOperation::Move { .. }))
+        .unwrap();
+
+    let validated_move = &result.validated_operations[move_idx];
+    assert!(
+        !validated_move.dependencies.is_empty(),
+        "Move operation should depend on CreateDir for parent directory"
+    );
+    assert!(
+        result.summary.valid >= 1,
+        "CreateDir operations should be valid"
+    );
+}

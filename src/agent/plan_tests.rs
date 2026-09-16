@@ -842,3 +842,183 @@ fn test_phase6c_legacy_plan_without_context_rejected() {
         "legacy plan without context must be rejected"
     );
 }
+
+#[test]
+fn test_move_dest_is_full_file_path() {
+    let dir = tempdir().unwrap();
+    let scope = create_flat_scope(&dir);
+
+    let parser = TaskIntentParser::new(scope.clone());
+    let intent = parser
+        .parse("Organize this folder by category")
+        .expect("should parse");
+
+    let analyzer = EvidenceAnalyzer::default();
+    let analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    let engine = RecommendationEngine;
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
+
+    let generator = PlanGenerator;
+    let plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
+
+    for op in &plan.operations {
+        if let FileSystemOperation::Move { source, dest } = op {
+            assert!(
+                source.file_name() == dest.file_name(),
+                "Move dest must preserve the source file name: source={:?}, dest={:?}",
+                source,
+                dest
+            );
+            assert!(dest != source, "Move dest must be different from source");
+            assert!(dest.starts_with(&scope), "Move dest must be within scope");
+        }
+    }
+}
+
+#[test]
+fn test_move_into_existing_category_directory() {
+    let dir = tempdir().unwrap();
+    let scope = dir.path().join("downloads");
+    fs::create_dir_all(&scope).unwrap();
+    fs::create_dir_all(scope.join("Documents")).unwrap();
+    fs::write(scope.join("readme.txt"), "text").unwrap();
+    fs::write(scope.join("license.md"), "license text").unwrap();
+
+    let parser = TaskIntentParser::new(scope.clone());
+    let intent = parser
+        .parse("Organize this folder by category")
+        .expect("should parse");
+
+    let analyzer = EvidenceAnalyzer::default();
+    let analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    let engine = RecommendationEngine;
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
+
+    let generator = PlanGenerator;
+    let plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
+
+    let moves: Vec<_> = plan
+        .operations
+        .iter()
+        .filter_map(|op| {
+            if let FileSystemOperation::Move { source, dest } = op {
+                Some((source.clone(), dest.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(!moves.is_empty(), "should have at least one move");
+
+    for (source, dest) in &moves {
+        assert_eq!(
+            source.file_name(),
+            dest.file_name(),
+            "dest file name should match source file name"
+        );
+        assert!(dest.starts_with(&scope), "Move dest must be within scope");
+        let parent = dest.parent().unwrap_or(dest);
+        assert!(
+            parent.ends_with("Documents")
+                || parent.ends_with("Images")
+                || parent.ends_with("Archives"),
+            "dest parent should be a category directory: {:?}",
+            parent
+        );
+    }
+}
+
+#[test]
+fn test_move_dest_parent_created_by_planned_create_dir() {
+    let dir = tempdir().unwrap();
+    let scope = dir.path().join("flat_scope");
+    fs::create_dir_all(&scope).unwrap();
+    fs::write(scope.join("doc.pdf"), "content").unwrap();
+    fs::write(scope.join("photo.jpg"), "img").unwrap();
+    fs::write(scope.join("archive.zip"), "data").unwrap();
+
+    let parser = TaskIntentParser::new(scope.clone());
+    let intent = parser
+        .parse("Organize this folder by category")
+        .expect("should parse");
+
+    let analyzer = EvidenceAnalyzer::default();
+    let analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    let engine = RecommendationEngine;
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
+
+    let generator = PlanGenerator;
+    let plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
+
+    for op in &plan.operations {
+        if let FileSystemOperation::Move { dest, .. } = op {
+            let parent = dest.parent().unwrap_or(dest);
+            if !parent.exists() {
+                let has_create_dir = plan.operations.iter().any(|op| {
+                    if let FileSystemOperation::CreateDir { path } = op {
+                        path == parent
+                    } else {
+                        false
+                    }
+                });
+                assert!(
+                    has_create_dir,
+                    "parent directory {:?} should have a planned CreateDir operation",
+                    parent
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_move_source_equals_dest_rejected_by_validator() {
+    let dir = tempdir().unwrap();
+    let scope = dir.path().join("test_scope");
+    fs::create_dir_all(&scope).unwrap();
+    let file = scope.join("file.txt");
+    fs::write(&file, "content").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-move-same".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: scope.clone(),
+        operations: vec![FileSystemOperation::Move {
+            source: file.clone(),
+            dest: file.clone(),
+        }],
+        estimated_impact: EstimatedImpact {
+            files_moved: 0,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 0,
+            total_bytes: 0,
+        },
+        validation_warnings: Vec::new(),
+        has_conflicts: false,
+        dry_run: true,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let validator = PlanValidator::default();
+    let result = validator.validate(&plan);
+
+    assert!(result.has_invalid, "source == dest must be INVALID");
+}

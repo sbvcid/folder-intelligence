@@ -1036,3 +1036,464 @@ fn test_phase6c_executor_dry_run_rejected_on_execute() {
     assert!(source.exists(), "source must still exist");
     assert!(!dest.exists(), "dest must not be created for dry-run plan");
 }
+
+fn create_move_plan_with_category_dir(
+    dir: &std::path::Path,
+    source_name: &str,
+    category_subdir: &str,
+    file_content: &str,
+) -> (OperationPlan, ValidationResult) {
+    let source = dir.join(source_name);
+    fs::write(&source, file_content).unwrap();
+
+    let dest_dir = dir.join(category_subdir);
+    fs::create_dir_all(&dest_dir).unwrap();
+    let dest = dest_dir.join(source_name);
+
+    let plan = OperationPlan {
+        id: "test-move-category".to_string(),
+        recommendation_id: "rec-move".to_string(),
+        scope: dir.to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    (plan, validation)
+}
+
+#[test]
+fn test_execute_move_into_existing_directory() {
+    let dir = tempdir().unwrap();
+    let (plan, validation) =
+        create_move_plan_with_category_dir(dir.path(), "doc.pdf", "Documents", "content");
+
+    let source = dir.path().join("doc.pdf");
+    let dest = dir.path().join("Documents").join("doc.pdf");
+    assert!(source.exists());
+    assert!(dir.path().join("Documents").is_dir());
+
+    let executor = Executor::default();
+    let result = executor.execute(&plan, &validation, false).unwrap();
+
+    assert!(
+        result.is_complete,
+        "move into existing directory should succeed"
+    );
+    assert!(
+        result.log.entries[0].status.is_success(),
+        "entry should be Success"
+    );
+    assert!(!source.exists(), "source should no longer exist");
+    assert!(dest.exists(), "dest should now exist at full file path");
+}
+
+#[test]
+fn test_execute_move_creates_parent_directory() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("photo.jpg");
+    fs::write(&source, "img").unwrap();
+    let dest = dir.path().join("Images").join("photo.jpg");
+
+    assert!(
+        !dir.path().join("Images").exists(),
+        "Images directory should not exist yet"
+    );
+
+    let plan = OperationPlan {
+        id: "test-move-parent".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    let executor = Executor::default();
+    let result = executor.execute(&plan, &validation, false).unwrap();
+
+    assert!(result.is_complete, "move should succeed");
+    assert!(
+        result.log.entries[0].status.is_success(),
+        "entry should be Success"
+    );
+    assert!(!source.exists(), "source should be gone");
+    assert!(dest.exists(), "dest should exist");
+    assert!(
+        dir.path().join("Images").is_dir(),
+        "parent directory should be created"
+    );
+}
+
+#[test]
+fn test_execute_move_missing_source() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("missing.txt");
+    let dest = dir.path().join("Documents").join("missing.txt");
+
+    let plan = OperationPlan {
+        id: "test-move-missing".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    let executor = Executor::default();
+    let result = executor
+        .execute_with_options(&plan, &validation, false)
+        .unwrap();
+
+    assert!(!result.is_complete, "move with missing source should fail");
+    assert!(
+        result.log.entries[0].status.is_failed(),
+        "entry should be Failed due to missing source"
+    );
+}
+
+#[test]
+fn test_execute_move_source_equals_dest() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("same.txt");
+    fs::write(&path, "content").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-move-same".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: path.clone(),
+            dest: path.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: path.clone(),
+                dest: path.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    let executor = Executor::default();
+    let result = executor
+        .execute_with_options(&plan, &validation, false)
+        .unwrap();
+
+    assert!(
+        result.log.entries[0].status.is_failed(),
+        "source == dest should fail at execution"
+    );
+    assert!(path.exists(), "file should still exist");
+}
+
+#[test]
+fn test_execute_move_dest_conflict_rejected() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("Documents").join("source.txt");
+    fs::write(&source, "new").unwrap();
+    fs::create_dir_all(dir.path().join("Documents")).unwrap();
+    fs::write(&dest, "existing").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-move-conflict".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.conflicts = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Conflict("Destination file exists".to_string()),
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: true,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 0,
+    };
+
+    let executor = Executor::default();
+    let result = executor.execute_with_options(&plan, &validation, false);
+
+    assert!(
+        matches!(
+            result,
+            Err(ApplyError::InvalidPlan(msg)) if msg.contains("CONFLICT")
+        ),
+        "executor must reject CONFLICT"
+    );
+    assert!(
+        source.exists(),
+        "source must still exist after rejected conflict"
+    );
+}
+
+#[test]
+fn test_undo_move_into_directory() {
+    let dir = tempdir().unwrap();
+    let (plan, validation) =
+        create_move_plan_with_category_dir(dir.path(), "doc.pdf", "Documents", "undo me");
+
+    let source = dir.path().join("doc.pdf");
+    let dest = dir.path().join("Documents").join("doc.pdf");
+    assert!(source.exists());
+
+    let executor = Executor::default();
+    let apply_result = executor.execute(&plan, &validation, false).unwrap();
+
+    assert!(
+        apply_result.log.entries[0].status.is_success(),
+        "move should succeed"
+    );
+    assert!(!source.exists(), "source should be gone after apply");
+    assert!(dest.exists(), "dest should exist after apply");
+
+    let undo_result = executor.undo(&apply_result.log).unwrap();
+
+    assert_eq!(
+        undo_result.total_undo_operations, 1,
+        "should undo 1 operation"
+    );
+    assert_eq!(undo_result.applied_undoes.len(), 1);
+    assert!(
+        undo_result.applied_undoes[0].status.is_success(),
+        "undo should succeed"
+    );
+    assert!(source.exists(), "source should be restored after undo");
+    assert!(!dest.exists(), "dest should be gone after undo");
+}
+
+#[test]
+fn test_undo_move_into_directory_no_parent() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("photo.jpg");
+    let dest = dir.path().join("Images").join("photo.jpg");
+    fs::write(&source, "img").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-undo-new-parent".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    let executor = Executor::default();
+    let apply_result = executor.execute(&plan, &validation, false).unwrap();
+    assert!(apply_result.is_complete, "move should succeed");
+
+    assert!(!source.exists(), "source should be gone");
+    assert!(dest.exists(), "dest should exist");
+
+    let undo_result = executor.undo(&apply_result.log).unwrap();
+    assert_eq!(undo_result.total_undo_operations, 1);
+    assert!(source.exists(), "source should be restored after undo");
+}
