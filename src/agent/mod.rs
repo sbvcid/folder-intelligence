@@ -4,6 +4,7 @@ pub mod executor;
 pub mod intent;
 pub mod pipeline;
 pub mod plan;
+pub mod policy;
 pub mod recommendation;
 pub mod validate;
 
@@ -32,6 +33,8 @@ pub use plan::{
     EstimatedImpact, FileSystemOperation, OperationPlan, PlanError, PlanGenerator,
     PlanValidationContext, ValidationWarning, WarningType,
 };
+#[allow(unused_imports)]
+pub use policy::{Policy, PolicyDecision};
 #[allow(unused_imports)]
 pub use recommendation::{
     ClarificationQuestion, ConstraintCheck, ConstraintViolation, ProposedCategory,

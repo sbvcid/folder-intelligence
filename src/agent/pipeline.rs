@@ -3,6 +3,7 @@ use crate::agent::clarification::ClarificationEngine;
 use crate::agent::executor::{ApplyError, ApplyResult, Executor, OperationLog, UndoResult};
 use crate::agent::intent::{Goal, IntentParseError, TaskIntent, TaskIntentParser};
 use crate::agent::plan::{OperationPlan, PlanError, PlanGenerator, PlanValidationContext};
+use crate::agent::policy::{Policy, PolicyDecision};
 use crate::agent::recommendation::{Recommendation, RecommendationEngine, RecommendationError};
 use crate::agent::validate::{PlanPreview, PlanValidator, ValidationResult};
 use crate::evidence::ScanLimits;
@@ -17,6 +18,7 @@ pub struct Pipeline {
     clarifier: ClarificationEngine,
     planner: PlanGenerator,
     validator: PlanValidator,
+    policy: Policy,
     executor: Executor,
 }
 
@@ -29,6 +31,7 @@ impl Default for Pipeline {
             clarifier: ClarificationEngine,
             planner: PlanGenerator,
             validator: PlanValidator,
+            policy: Policy::default(),
             executor: Executor,
         }
     }
@@ -43,8 +46,15 @@ impl Pipeline {
             clarifier: ClarificationEngine,
             planner: PlanGenerator,
             validator: PlanValidator,
+            policy: Policy::default(),
             executor: Executor,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Parse a natural language request into a structured `TaskIntent`.
@@ -130,6 +140,19 @@ impl Pipeline {
         self.validator.validate(plan)
     }
 
+    /// Evaluate whether a plan should be approved for execution by the policy.
+    ///
+    /// This does NOT execute anything and does NOT mutate the filesystem.
+    /// Callers can inspect the decision before calling `apply`.
+    #[allow(dead_code)]
+    pub fn policy_evaluate(
+        &self,
+        plan: &OperationPlan,
+        validation: &ValidationResult,
+    ) -> PolicyDecision {
+        self.policy.evaluate(plan, validation)
+    }
+
     /// Render a human-readable preview of a plan and its validation.
     pub fn preview(&self, plan: &OperationPlan, validation: &ValidationResult) -> String {
         PlanPreview.render(plan, validation)
@@ -138,8 +161,8 @@ impl Pipeline {
     /// Apply a validated plan to the filesystem.
     ///
     /// This is the ONLY method that mutates the filesystem.
-    /// Plan must have `dry_run = false`.
-    /// INVALID and CONFLICT operations are always rejected.
+    /// The pipeline's policy is evaluated before execution: INVALID,
+    /// CONFLICT, and dry-run plans are always rejected by the policy.
     /// BLOCKED operations are skipped when `force = true`.
     pub fn apply(
         &self,
@@ -147,22 +170,11 @@ impl Pipeline {
         validation: &ValidationResult,
         options: &ApplyOptions,
     ) -> Result<ApplyResult, PipelineError> {
-        if plan.dry_run {
-            return Err(PipelineError::Apply(ApplyError::DryRunFlagSet));
-        }
-
-        if validation.has_invalid {
-            return Err(PipelineError::Apply(ApplyError::InvalidPlan(
-                "Plan has INVALID operations (missing source, path outside scope, etc.)"
-                    .to_string(),
-            )));
-        }
-
-        if validation.has_conflicts {
-            return Err(PipelineError::Apply(ApplyError::InvalidPlan(
-                "Plan has CONFLICT operations (overlapping destinations, circular moves)."
-                    .to_string(),
-            )));
+        match self.policy.evaluate(plan, validation) {
+            PolicyDecision::Approved => {}
+            PolicyDecision::Rejected => {
+                return Err(PipelineError::PolicyRejected);
+            }
         }
 
         if validation.has_blocked && !options.force {
@@ -288,6 +300,7 @@ pub enum PipelineError {
     Recommendation(RecommendationError),
     Plan(PlanError),
     Apply(ApplyError),
+    PolicyRejected,
     Io(String),
 }
 
@@ -299,6 +312,7 @@ impl std::fmt::Display for PipelineError {
             PipelineError::Recommendation(e) => write!(f, "Recommendation error: {}", e),
             PipelineError::Plan(e) => write!(f, "Plan generation error: {}", e),
             PipelineError::Apply(e) => write!(f, "Apply error: {}", e),
+            PipelineError::PolicyRejected => write!(f, "Plan rejected by policy"),
             PipelineError::Io(msg) => write!(f, "IO error: {}", msg),
         }
     }
@@ -340,7 +354,7 @@ impl From<ApplyError> for PipelineError {
 mod tests {
     use super::*;
     use crate::agent::plan::FileSystemOperation;
-    use crate::agent::validate::ValidationStatus;
+    use crate::agent::validate::{ValidatedOperation, ValidationStatus};
     use std::fs;
     use tempfile::tempdir;
 
@@ -525,10 +539,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(PipelineError::Apply(ApplyError::DryRunFlagSet))
-        ));
+        assert!(matches!(result, Err(PipelineError::PolicyRejected)));
     }
 
     #[test]
@@ -557,10 +568,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(PipelineError::Apply(ApplyError::InvalidPlan(msg))) if msg.contains("INVALID")
-        ));
+        assert!(matches!(result, Err(PipelineError::PolicyRejected)));
     }
 
     #[test]
@@ -628,10 +636,7 @@ mod tests {
             },
         );
 
-        assert!(matches!(
-            result,
-            Err(PipelineError::Apply(ApplyError::InvalidPlan(msg))) if msg.contains("CONFLICT")
-        ));
+        assert!(matches!(result, Err(PipelineError::PolicyRejected)));
     }
 
     #[test]
@@ -674,10 +679,7 @@ mod tests {
                 dry_run: false,
             },
         );
-        assert!(matches!(
-            result,
-            Err(PipelineError::Apply(ApplyError::InvalidPlan(msg))) if msg.contains("INVALID")
-        ));
+        assert!(matches!(result, Err(PipelineError::PolicyRejected)));
     }
 
     #[test]
@@ -997,10 +999,7 @@ mod tests {
             },
         );
         assert!(
-            matches!(
-                result,
-                Err(PipelineError::Apply(crate::agent::ApplyError::InvalidPlan(msg))) if msg.contains("INVALID")
-            ),
+            matches!(result, Err(PipelineError::PolicyRejected)),
             "INVALID + force must still be rejected"
         );
     }
@@ -1040,10 +1039,7 @@ mod tests {
             },
         );
         assert!(
-            matches!(
-                result,
-                Err(PipelineError::Apply(crate::agent::ApplyError::InvalidPlan(msg))) if msg.contains("CONFLICT")
-            ),
+            matches!(result, Err(PipelineError::PolicyRejected)),
             "CONFLICT + force must still be rejected"
         );
     }
@@ -1228,6 +1224,318 @@ mod tests {
         assert!(
             undo_result.total_undo_operations > 0,
             "should have undoable operations"
+        );
+    }
+
+    #[test]
+    fn test_policy_approves_valid_plan_execution_allowed() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("readme.txt"), "text").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
+
+        let source = scope.join("readme.txt");
+        let files_before = collect_files(&scope);
+
+        let result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .unwrap();
+
+        assert!(result.is_complete);
+        let files_after = collect_files(&scope);
+        assert_ne!(
+            files_before, files_after,
+            "filesystem must be mutated on approved apply"
+        );
+        assert!(
+            !source.exists(),
+            "source must no longer exist at original path"
+        );
+    }
+
+    #[test]
+    fn test_policy_rejected_prevents_filesystem_mutation() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let intent = crate::agent::TaskIntentParser::new(scope.clone())
+            .parse("Organize this folder by category")
+            .unwrap();
+        let analyzer = crate::agent::EvidenceAnalyzer;
+        let analysis = analyzer.analyze(&intent).unwrap();
+        let engine = crate::agent::RecommendationEngine;
+        let recommendation = engine.recommend(&intent, &analysis).unwrap();
+        let generator = crate::agent::PlanGenerator;
+        let mut plan = generator.generate(&recommendation, &analysis, &[]).unwrap();
+        plan.validation_context = Some(crate::agent::PlanValidationContext::from(
+            &intent.constraints,
+        ));
+        let validator = crate::agent::PlanValidator;
+        let validation = validator.validate(&plan);
+
+        let source = scope.join("doc.pdf");
+        let files_before = collect_files(&scope);
+
+        let pipeline =
+            Pipeline::new(&scope).with_policy(crate::agent::Policy::default().auto_approve(false));
+
+        let result = pipeline.apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(PipelineError::PolicyRejected)),
+            "auto-approve=false must reject valid plan: {:?}",
+            result
+        );
+        assert!(
+            source.exists(),
+            "source must still exist after policy rejection"
+        );
+        let files_after = collect_files(&scope);
+        assert_eq!(
+            files_before, files_after,
+            "no filesystem mutation when policy rejects"
+        );
+    }
+
+    #[test]
+    fn test_policy_enforced_before_executor() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        let source = scope.join("doc.pdf");
+        fs::write(&source, "test").unwrap();
+        let dest = scope.join("Documents").join("doc.pdf");
+
+        let plan = OperationPlan {
+            id: "policy-test".to_string(),
+            recommendation_id: "rec".to_string(),
+            scope: scope.clone(),
+            operations: vec![FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            }],
+            estimated_impact: crate::agent::EstimatedImpact {
+                files_moved: 1,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 1,
+                total_bytes: 1024,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(crate::agent::PlanValidationContext::default()),
+        };
+
+        let mut validation = ValidationResult {
+            plan_id: plan.id.clone(),
+            scope: scope.clone(),
+            validated_operations: vec![ValidatedOperation {
+                operation: FileSystemOperation::Move {
+                    source: source.clone(),
+                    dest: dest.clone(),
+                },
+                status: ValidationStatus::Valid,
+                warnings: vec![],
+                dependencies: vec![],
+            }],
+            summary: crate::agent::ValidationSummary::new(),
+            has_blocked: false,
+            has_conflicts: false,
+            has_invalid: false,
+            has_warnings: false,
+            executable_operations: 1,
+        };
+        validation.summary.valid = 1;
+        validation.summary.total = 1;
+
+        let pipeline =
+            Pipeline::new(&scope).with_policy(crate::agent::Policy::default().auto_approve(false));
+
+        let result = pipeline.apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(PipelineError::PolicyRejected)),
+            "policy rejection must prevent executor from running"
+        );
+        assert!(source.exists(), "source must not be moved");
+        assert!(!dest.exists(), "dest must not be created");
+    }
+
+    #[test]
+    fn test_policy_evaluation_does_not_mutate_filesystem() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
+
+        let files_before = collect_files(&scope);
+        let _ = pipeline.policy_evaluate(&plan, &validation);
+        let files_after = collect_files(&scope);
+
+        assert_eq!(
+            files_before, files_after,
+            "policy evaluation must not mutate filesystem"
+        );
+    }
+
+    #[test]
+    fn test_policy_bypass_does_not_skip_executor_checks() {
+        // Defense-in-depth: even when the policy approves (summary flags
+        // clean), the Executor still checks per-operation validation statuses.
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        let source = scope.join("source.txt");
+        let dest = scope.join("Documents").join("source.txt");
+        fs::write(&source, "original").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+        fs::write(&dest, "existing").unwrap();
+
+        let plan = OperationPlan {
+            id: "exec-defense".to_string(),
+            recommendation_id: "rec".to_string(),
+            scope: scope.clone(),
+            operations: vec![FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            }],
+            estimated_impact: crate::agent::EstimatedImpact {
+                files_moved: 1,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 1,
+                total_bytes: 1024,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(crate::agent::PlanValidationContext::default()),
+        };
+
+        // Per-operation Conflict status, but summary flag is false (no duplicate dests)
+        let validation = ValidationResult {
+            plan_id: plan.id.clone(),
+            scope: scope.clone(),
+            validated_operations: vec![ValidatedOperation {
+                operation: FileSystemOperation::Move {
+                    source: source.clone(),
+                    dest: dest.clone(),
+                },
+                status: ValidationStatus::Conflict("Destination exists".to_string()),
+                warnings: vec![],
+                dependencies: vec![],
+            }],
+            summary: {
+                let mut s = crate::agent::ValidationSummary::new();
+                s.conflicts = 1;
+                s
+            },
+            has_blocked: false,
+            has_conflicts: false,
+            has_invalid: false,
+            has_warnings: false,
+            executable_operations: 0,
+        };
+
+        let pipeline = Pipeline::new(&scope);
+
+        // Policy approves (summary flags are clean)
+        let decision = pipeline.policy_evaluate(&plan, &validation);
+        assert!(
+            decision.is_approved(),
+            "policy should approve when summary flags are clean"
+        );
+
+        // Executor catches per-operation Conflict (defense-in-depth)
+        let result = pipeline.apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(PipelineError::Apply(ApplyError::InvalidPlan(msg)))
+                    if msg.contains("CONFLICT")
+            ),
+            "Executor defense-in-depth must reject per-operation CONFLICT after policy approval"
+        );
+        assert!(
+            source.exists(),
+            "source must still exist after Executor rejection"
+        );
+    }
+
+    #[test]
+    fn test_existing_phase6c_behavior_unchanged() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+        assert!(!validation.has_invalid, "valid plan should not be invalid");
+        assert!(
+            !validation.has_conflicts,
+            "valid plan should not have conflicts"
+        );
+
+        let decision = fresh_pipeline.policy_evaluate(&reloaded, &validation);
+        assert!(
+            decision.is_approved(),
+            "default policy must approve a valid plan"
         );
     }
 
