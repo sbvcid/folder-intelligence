@@ -34,6 +34,9 @@ pub use agent::{
     ValidationWarning, WarningType, PlanGenerator, PlanError,
     ValidationStatus, ValidatedOperation, ValidationSummary, ValidationResult,
     PlanValidator, PlanPreview,
+    Executor, ExecutionStatus, UndoConflict, LogEntry, OperationLog,
+    UndoLogEntry, UndoResult, ApplyError, ApplyResult,
+    Pipeline, PipelineOptions, ApplyOptions, PipelineResult, PipelineError,
 };
 
 #[cfg(feature = "network")]

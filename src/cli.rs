@@ -65,6 +65,18 @@ pub enum Commands {
     Validate {
         request: String,
         scope: Option<PathBuf>,
+        dry_run: bool,
+        output: Option<PathBuf>,
+    },
+    Apply {
+        plan_file: PathBuf,
+        dry_run: bool,
+        force: bool,
+        output: Option<PathBuf>,
+    },
+    Undo {
+        log_file: PathBuf,
+        dry_run: bool,
         output: Option<PathBuf>,
     },
 }
@@ -172,8 +184,22 @@ impl Cli {
                     .free_from_str::<String>()
                     .map_err(|_| anyhow!("No intent request provided"))?;
                 let scope = args.opt_value_from_os_str("--scope", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let dry_run = args.contains("--dry-run");
                 let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
-                Commands::Validate { request, scope, output }
+                Commands::Validate { request, scope, dry_run, output }
+            }
+            "apply" => {
+                let plan_file = args.value_from_os_str("--plan", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let dry_run = args.contains("--dry-run");
+                let force = args.contains("--force");
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::Apply { plan_file, dry_run, force, output }
+            }
+            "undo" => {
+                let log_file = args.value_from_os_str("--log", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                let dry_run = args.contains("--dry-run");
+                let output = args.opt_value_from_os_str("--output", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
+                Commands::Undo { log_file, dry_run, output }
             }
             _ => return Err(anyhow!("Unknown subcommand: {}", subcommand)),
         };
@@ -372,7 +398,7 @@ impl Cli {
                 let json_output = serde_json::to_string_pretty(&plan)?;
                 write_output(&json_output, output)?;
             }
-            Commands::Validate { request, scope, output } => {
+             Commands::Validate { request, scope, dry_run, output } => {
                 let parser = if let Some(s) = scope {
                     TaskIntentParser::new(s)
                 } else {
@@ -385,11 +411,70 @@ impl Cli {
                 let recommendation = engine.recommend(&intent, &analysis)?;
                 let generator = crate::agent::PlanGenerator;
                 let plan = generator.generate(&recommendation, &analysis, &[])?;
+                let plan_with_dry_run = crate::agent::OperationPlan {
+                    dry_run,
+                    ..plan
+                };
+                let validator = crate::agent::PlanValidator;
+                let validation = validator.validate(&plan_with_dry_run, &intent);
+                let previewer = crate::agent::PlanPreview;
+                let preview = previewer.render(&plan_with_dry_run, &validation);
+                write_output(&preview, output)?;
+            }
+            Commands::Apply { plan_file, dry_run, force, output } => {
+                let plan_json = std::fs::read_to_string(&plan_file)?;
+                let mut plan: crate::agent::OperationPlan = serde_json::from_str(&plan_json)?;
+                if plan.dry_run {
+                    return Err(anyhow!("Plan has dry_run=true; cannot apply"));
+                }
+
+                if dry_run {
+                    plan.dry_run = true;
+                }
+
+                let intent = crate::agent::TaskIntentParser::default().parse("apply plan")?;
                 let validator = crate::agent::PlanValidator;
                 let validation = validator.validate(&plan, &intent);
-                let previewer = crate::agent::PlanPreview;
-                let preview = previewer.render(&plan, &validation);
-                write_output(&preview, output)?;
+
+                if (validation.has_blocked || validation.has_invalid) && !force {
+                    return Err(anyhow!("Plan has blocked or invalid operations. Use --force to override."));
+                }
+
+                let executor = crate::agent::Executor;
+                let result = executor.execute_with_options(&plan, &validation, force)?;
+                let json_output = serde_json::to_string_pretty(&result)?;
+                write_output(&json_output, output)?;
+            }
+            Commands::Undo { log_file, dry_run, output } => {
+                let log_json = std::fs::read_to_string(&log_file)?;
+                let log: crate::agent::OperationLog = serde_json::from_str(&log_json)?;
+
+                let executor = crate::agent::Executor;
+
+                if dry_run {
+                    let result = crate::agent::UndoResult {
+                        log_id: log.id.clone(),
+                        applied_undoes: Vec::new(),
+                        conflicts: log.undoable_entries()
+                            .iter()
+                            .map(|e| crate::agent::UndoConflict::SourceMissing {
+                                path: e.applied_target.clone(),
+                                message: format!("Would undo: {} -> {}", e.applied_target.display(), e.original_source.display()),
+                            })
+                            .collect(),
+                        total_undo_operations: log.undoable_entries().len(),
+                        completed_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                    };
+                    let json_output = serde_json::to_string_pretty(&result)?;
+                    write_output(&json_output, output)?;
+                } else {
+                    let result = executor.undo(&log)?;
+                    let json_output = serde_json::to_string_pretty(&result)?;
+                    write_output(&json_output, output)?;
+                }
             }
         }
         Ok(())

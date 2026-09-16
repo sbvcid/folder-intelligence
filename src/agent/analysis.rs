@@ -158,9 +158,20 @@ impl EvidenceAnalyzer {
         let scope_evidence = scan_result.evidence.into_iter().next().unwrap();
         let scan_metadata = scan_result.metadata;
 
+        self.analyze_with_evidence(intent, scope_evidence, scan_metadata, start)
+    }
+
+    pub fn analyze_with_evidence(
+        &self,
+        intent: &TaskIntent,
+        scope_evidence: DirectoryEvidence,
+        scan_metadata: crate::evidence::ScanMetadata,
+        start: std::time::Instant,
+    ) -> Result<TaskAnalysis, AnalyzerError> {
+        let scope = &scope_evidence.path;
         let content_groups = Self::group_content(&scope_evidence);
         let structure_summary = Self::build_structure_summary(&scope_evidence, &content_groups);
-        let candidate_categories = Self::find_candidate_categories(&scope, &scan_metadata);
+        let candidate_categories = Self::find_candidate_categories(scope, &scan_metadata);
         let classification_results = self.run_classification(&scope_evidence, &candidate_categories, scan_metadata.clone())?;
         let anomalies = Self::detect_anomalies(&scope_evidence);
         let ambiguities = Self::detect_ambiguities(&scope_evidence, &classification_results);

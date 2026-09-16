@@ -11,11 +11,8 @@ categories = ["command-line-utilities", "filesystem"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-walkdir = "2.5"
 anyhow = "1.0"
 thiserror = "1.0"
-rayon = "1.10"
-bstr = "1.10"
 regex = "1.10"
 pico-args = "0.5"
 

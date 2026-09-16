@@ -4,6 +4,8 @@ pub mod recommendation;
 pub mod clarification;
 pub mod plan;
 pub mod validate;
+pub mod executor;
+pub mod pipeline;
 
 #[allow(unused_imports)]
 pub use intent::{
@@ -36,4 +38,13 @@ pub use plan::{
 pub use validate::{
     ValidationStatus, ValidatedOperation, ValidationSummary, ValidationResult,
     PlanValidator, PlanPreview,
+};
+#[allow(unused_imports)]
+pub use executor::{
+    ExecutionStatus, UndoConflict, LogEntry, OperationLog, UndoLogEntry, UndoResult,
+    ApplyError, ApplyResult, Executor,
+};
+#[allow(unused_imports)]
+pub use pipeline::{
+    Pipeline, PipelineOptions, ApplyOptions, PipelineResult, PipelineError,
 };

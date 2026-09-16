@@ -449,6 +449,7 @@ impl PlanGenerator {
         path_components.starts_with(&scope_components[..])
     }
 
+    #[allow(dead_code)]
     pub fn preview(&self, plan: &OperationPlan) -> String {
         let mut preview = String::new();
         preview.push_str(&format!("Operation Plan: {}\n", plan.id));

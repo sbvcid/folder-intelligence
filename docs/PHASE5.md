@@ -1,4 +1,4 @@
-# Phase 5 — Intent & Planning Layer
+# Phase 5 — Intent & Planning Layer (Frozen)
 
 ## Positioning in Architecture
 
@@ -91,8 +91,7 @@ pub struct Recommendation {
     pub rationale: String,
     pub proposed_plan: OperationPlan,
     pub confidence: f32,
-    pub risks: Vec<Risk>,
-    pub alternatives: Vec<AlternativePlan>,
+    pub warnings: Vec<String>,
 }
 
 pub struct OperationPlan {
@@ -105,19 +104,20 @@ pub enum FileSystemOperation {
     Move { source: PathBuf, dest: PathBuf },
     CreateDir { path: PathBuf },
     Delete { path: PathBuf },
-    Copy { source: PathBuf, dest: PathBuf },
-    Rename { from: PathBuf, to: PathBuf },
 }
 
 pub struct OperationLog {
-    pub plan_id: Uuid,
-    pub operations: Vec<LoggedOperation>,
-    pub applied_at: DateTime<Utc>,
-    pub reversible: bool,
-    pub undo_script: UndoScript,
+    pub id: String,
+    pub plan_id: String,
+    pub entries: Vec<LogEntry>,
+    pub started_at: u64,
+    pub completed_at: Option<u64>,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub skipped_count: usize,
+    pub total_entries: usize,
 }
 ```
-
 ## Sub-phase Details
 
 ### 5A — Intent Understanding (AI)
@@ -188,6 +188,7 @@ I scanned Downloads. Found 5 major content types:
   - Development (PY, JS, etc.): 9 files
 
 83 files are ambiguous (generic names, mixed extensions).
+
 Recommended: create 5 category folders, move matched files,
 leave ambiguous files in place.
 
@@ -324,7 +325,131 @@ Dry run: Yes
   Dirs created: 2
 ```
 
-## Layering: What's Deterministic vs AI vs User
+### 5F — Plan Validation & Preview (Deterministic)
+
+Validate an `OperationPlan` against constraints and render a preview before execution.
+
+**Input**: `OperationPlan` + `TaskIntent`
+
+**Output**: `ValidationResult` + `PlanPreview` (textual preview)
+
+**Key boundary rules**:
+- Validates each operation: source exists, destination within scope, no source=dest collisions
+- Checks constraint violations (temp file deletion, folder preservation)
+- Detects duplicate sources, conflicting destinations, and circular dependencies
+- Generates `ValidationStatus` per operation: `Valid`, `BlockedByConstraint`, `Conflict`, `Invalid`, `Warning`
+- Produces `PlanPreview` — a human-readable summary with validation summary and per-operation status
+
+```rust
+pub enum ValidationStatus {
+    Valid,
+    BlockedByConstraint(String),
+    Conflict(String),
+    Invalid(String),
+    Warning(String),
+}
+
+pub struct ValidationResult {
+    pub plan_id: String,
+    pub scope: PathBuf,
+    pub validated_operations: Vec<ValidatedOperation>,
+    pub summary: ValidationSummary,
+    pub has_blocked: bool,
+    pub has_conflicts: bool,
+    pub has_invalid: bool,
+    pub has_warnings: bool,
+    pub executable_operations: usize,
+}
+
+pub struct PlanPreview;
+impl PlanPreview {
+    pub fn render(&self, plan: &OperationPlan, validation: &ValidationResult) -> String;
+}
+```
+
+### 5G — Apply, OperationLog & Undo (Deterministic executor)
+
+Execute validated `OperationPlan` on the filesystem, log each operation's outcome, and provide deterministic undo capability.
+
+**Input**: `OperationPlan` (validated) + `ValidationResult` (validated)
+
+**Output**: `ApplyResult` containing an `OperationLog` with per-operation entries; `UndoResult` for undo operations
+
+**Key boundary rules**:
+- **Only validated plans are accepted** — `dry_run` plans are rejected
+- Each operation transitions to a terminal `ExecutionStatus`: `Success`, `Failed`, `Skipped`, or `UndoNotSupported`
+- `OperationLog` records per-operation metadata: source, target, status, timestamps, error, undo capability
+- JSON/in-memory logging (no SQLite) — `OperationLog` is serializable
+- Move and CreateDir operations are undoable; Delete operations are not (irreversible)
+- Undo reverses only `Success` operations; preconditions are checked (source must exist, target must not exist)
+- Undo conflicts are reported via `UndoConflict` enum: `SourceMissing`, `TargetExists`, `NotUndoable`
+- Dry-run flag on `Apply` produces no filesystem changes
+- `apply` CLI loads a plan JSON file, validates it, and executes
+- `undo` CLI loads a log JSON file and reverses executed operations
+
+```rust
+pub enum ExecutionStatus {
+    Pending,
+    Success,
+    Failed(String),
+    Skipped(String),
+    UndoNotSupported,
+}
+
+pub struct LogEntry {
+    pub id: String,
+    pub plan_id: String,
+    pub operation_type: String,
+    pub original_source: PathBuf,
+    pub applied_target: PathBuf,
+    pub status: ExecutionStatus,
+    pub started_at: u64,
+    pub completed_at: Option<u64>,
+    pub error: Option<String>,
+    pub undo_supported: bool,
+}
+
+pub struct OperationLog {
+    pub id: String,
+    pub plan_id: String,
+    pub entries: Vec<LogEntry>,
+    pub started_at: u64,
+    pub completed_at: Option<u64>,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub skipped_count: usize,
+    pub total_entries: usize,
+}
+
+pub struct UndoResult {
+    pub log_id: String,
+    pub applied_undoes: Vec<UndoLogEntry>,
+    pub conflicts: Vec<UndoConflict>,
+    pub total_undo_operations: usize,
+    pub completed_at: u64,
+}
+
+pub struct Executor;
+impl Executor {
+    pub fn execute(&self, plan: &OperationPlan, validation: &ValidationResult, dry_run: bool) -> Result<ApplyResult, ApplyError>;
+    pub fn undo(&self, log: &OperationLog) -> Result<UndoResult, ApplyError>;
+}
+```
+
+CLI commands:
+```bash
+# Validate and preview a plan (5F)
+fi validate "Organize Downloads by category" --scope ./Downloads
+
+# Apply a validated plan (5G)
+fi apply --plan plan.json --dry-run    # Dry run: no filesystem changes
+fi apply --plan plan.json              # Execute: applies validated operations
+fi apply --plan plan.json --force      # Force apply: bypasses BLOCKED ops (constraint violations) only; INVALID ops (missing source, path outside scope) are always rejected
+
+# Undo executed operations (5G)
+fi undo --log log.json                 # Reverse all undoable operations
+fi undo --log log.json --dry-run       # Preview undo actions
+```
 
 | Component | Owner | Reason |
 |-----------|-------|--------|
@@ -373,8 +498,18 @@ fi plan "Organize Downloads by category" --scope ./Downloads
 # Interactive mode (planned for 5D+5E)
 fi plan "Organize by Work / Personal / Entertainment" --interactive
 
-# Apply with approval (5G — planned)
-fi plan "Organize Downloads" --apply
+# Validate and preview a plan (5F)
+fi validate "Organize Downloads by category" --scope ./Downloads
+fi validate "Organize Downloads by category" --scope ./Downloads --dry-run
+
+# Apply a validated plan (5G)
+fi apply --plan plan.json --dry-run    # Dry run: no filesystem changes
+fi apply --plan plan.json              # Execute: applies validated operations
+fi apply --plan plan.json --force      # Force apply: bypasses BLOCKED ops (constraint violations) only; INVALID ops (missing source, path outside scope) are always rejected
+
+# Undo executed operations (5G)
+fi undo --log log.json                 # Reverse all undoable operations
+fi undo --log log.json --dry-run       # Preview undo actions
 ```
 
 ## What NOT to implement in Phase 5
@@ -384,3 +519,53 @@ fi plan "Organize Downloads" --apply
 - New AI provider integration (reuse Phase 4B)
 - Multiple simultaneous task intents (single focus per invocation)
 - Long-term conversation state / memory
+
+## Phase Status
+
+**Phase 5 Frozen** — All sub-phases complete. No further features to be added within Phase 5.
+
+| Sub-phase | Status | Implementation |
+|-----------|--------|----------------|
+| 5A — Intent Understanding | Complete | `src/agent/intent.rs` |
+| 5B — Evidence Analysis | Complete | `src/agent/analysis.rs` |
+| 5C — AI Reasoning & Recommendation | Complete | `src/agent/recommendation.rs` |
+| 5D — User Clarification | Complete | `src/agent/clarification.rs` |
+| 5E — Operation Plan Generation | Complete | `src/agent/plan.rs` |
+| 5F — Plan Validation & Preview | Complete | `src/agent/validate.rs` |
+| 5G — Apply, OperationLog & Undo | Complete | `src/agent/executor.rs` |
+
+## Authority Separation Boundary
+
+```
+AI
+ │
+ │ proposes
+ ▼
+Recommendation
+ │
+ ▼
+OperationPlan
+ │
+ ▼
+5F Validation
+ │
+ ├── INVALID ──────→ always rejected (never bypassable)
+ ├── CONFLICT ─────→ always rejected (never bypassable)
+ ├── BLOCKED ──────→ --force bypasses only as SKIPPED
+ └── VALID
+       │
+       ▼
+5G live precondition check
+       │
+       ▼
+Filesystem mutation
+       │
+       ▼
+OperationLog (serializable)
+       │
+       ▼
+Undo successful/reversible operations only
+```
+
+> **AI has reasoning authority, but no filesystem mutation authority.**
+> Deterministic validation/execution layer is the sole authority for filesystem mutations.
