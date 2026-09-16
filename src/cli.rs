@@ -2,7 +2,7 @@ use crate::evidence::{ScanLimits, ScanResult};
 use crate::scanner::Scanner;
 use crate::classification::ClassificationProcessor;
 use crate::classification::AiClassifier;
-use crate::agent::TaskIntentParser;
+use crate::agent::Pipeline;
 use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
@@ -331,117 +331,96 @@ impl Cli {
                 write_output(schema, output)?;
             }
             Commands::Intent { request, scope, output } => {
-                let parser = if let Some(s) = scope {
-                    TaskIntentParser::new(s)
+                let pipeline = if let Some(s) = &scope {
+                    Pipeline::new(s)
                 } else {
-                    TaskIntentParser::default()
+                    Pipeline::default()
                 };
-                let intent = parser.parse(&request)?;
+                let intent = pipeline.parse_intent(&request)?;
                 let json_output = serde_json::to_string_pretty(&intent)?;
                 write_output(&json_output, output)?;
             }
             Commands::Analyze { request, scope, output } => {
-                let parser = if let Some(s) = scope {
-                    TaskIntentParser::new(s)
+                let pipeline = if let Some(s) = &scope {
+                    Pipeline::new(s)
                 } else {
-                    TaskIntentParser::default()
+                    Pipeline::default()
                 };
-                let intent = parser.parse(&request)?;
-                let analyzer = crate::agent::EvidenceAnalyzer;
-                let analysis = analyzer.analyze(&intent)?;
+                let intent = pipeline.parse_intent(&request)?;
+                let analysis = pipeline.analyze(&intent)?;
                 let json_output = serde_json::to_string_pretty(&analysis)?;
                 write_output(&json_output, output)?;
             }
             Commands::Recommend { request, scope, output } => {
-                let parser = if let Some(s) = scope {
-                    TaskIntentParser::new(s)
+                let pipeline = if let Some(s) = &scope {
+                    Pipeline::new(s)
                 } else {
-                    TaskIntentParser::default()
+                    Pipeline::default()
                 };
-                let intent = parser.parse(&request)?;
-                let analyzer = crate::agent::EvidenceAnalyzer;
-                let analysis = analyzer.analyze(&intent)?;
-                let engine = crate::agent::RecommendationEngine;
-                let recommendation = engine.recommend(&intent, &analysis)?;
+                let intent = pipeline.parse_intent(&request)?;
+                let analysis = pipeline.analyze(&intent)?;
+                let recommendation = pipeline.recommend(&intent, &analysis)?;
                 let json_output = serde_json::to_string_pretty(&recommendation)?;
                 write_output(&json_output, output)?;
             }
             Commands::Clarify { request, scope, output } => {
-                let parser = if let Some(s) = scope {
-                    TaskIntentParser::new(s)
+                let pipeline = if let Some(s) = &scope {
+                    Pipeline::new(s)
                 } else {
-                    TaskIntentParser::default()
+                    Pipeline::default()
                 };
-                let intent = parser.parse(&request)?;
-                let analyzer = crate::agent::EvidenceAnalyzer;
-                let analysis = analyzer.analyze(&intent)?;
-                let engine = crate::agent::RecommendationEngine;
-                let recommendation = engine.recommend(&intent, &analysis)?;
-
-                let clarifier = crate::agent::ClarificationEngine;
-                let summary = clarifier.summarize(&recommendation);
+                let intent = pipeline.parse_intent(&request)?;
+                let analysis = pipeline.analyze(&intent)?;
+                let recommendation = pipeline.recommend(&intent, &analysis)?;
+                let summary = pipeline.clarify(&recommendation);
                 write_output(&summary, output)?;
             }
             Commands::Plan { request, scope, output } => {
-                let parser = if let Some(s) = scope {
-                    TaskIntentParser::new(s)
+                let pipeline = if let Some(s) = &scope {
+                    Pipeline::new(s)
                 } else {
-                    TaskIntentParser::default()
+                    Pipeline::default()
                 };
-                let intent = parser.parse(&request)?;
-                let analyzer = crate::agent::EvidenceAnalyzer;
-                let analysis = analyzer.analyze(&intent)?;
-                let engine = crate::agent::RecommendationEngine;
-                let recommendation = engine.recommend(&intent, &analysis)?;
-                let generator = crate::agent::PlanGenerator;
-                let plan = generator.generate(&recommendation, &analysis, &[])?;
+                let intent = pipeline.parse_intent(&request)?;
+                let analysis = pipeline.analyze(&intent)?;
+                let recommendation = pipeline.recommend(&intent, &analysis)?;
+                let plan = pipeline.plan(&recommendation, &analysis)?;
                 let json_output = serde_json::to_string_pretty(&plan)?;
                 write_output(&json_output, output)?;
             }
-             Commands::Validate { request, scope, dry_run, output } => {
-                let parser = if let Some(s) = scope {
-                    TaskIntentParser::new(s)
+            Commands::Validate { request, scope, dry_run, output } => {
+                let pipeline = if let Some(s) = &scope {
+                    Pipeline::new(s)
                 } else {
-                    TaskIntentParser::default()
+                    Pipeline::default()
                 };
-                let intent = parser.parse(&request)?;
-                let analyzer = crate::agent::EvidenceAnalyzer;
-                let analysis = analyzer.analyze(&intent)?;
-                let engine = crate::agent::RecommendationEngine;
-                let recommendation = engine.recommend(&intent, &analysis)?;
-                let generator = crate::agent::PlanGenerator;
-                let plan = generator.generate(&recommendation, &analysis, &[])?;
-                let plan_with_dry_run = crate::agent::OperationPlan {
-                    dry_run,
-                    ..plan
-                };
-                let validator = crate::agent::PlanValidator;
-                let validation = validator.validate(&plan_with_dry_run, &intent);
-                let previewer = crate::agent::PlanPreview;
-                let preview = previewer.render(&plan_with_dry_run, &validation);
+                let intent = pipeline.parse_intent(&request)?;
+                let analysis = pipeline.analyze(&intent)?;
+                let recommendation = pipeline.recommend(&intent, &analysis)?;
+                let mut plan = pipeline.plan(&recommendation, &analysis)?;
+                if dry_run {
+                    plan.dry_run = true;
+                }
+                let validation = pipeline.validate(&plan, &intent);
+                let preview = pipeline.preview(&plan, &validation);
                 write_output(&preview, output)?;
             }
             Commands::Apply { plan_file, dry_run, force, output } => {
                 let plan_json = std::fs::read_to_string(&plan_file)?;
-                let mut plan: crate::agent::OperationPlan = serde_json::from_str(&plan_json)?;
+                let plan: crate::agent::OperationPlan = serde_json::from_str(&plan_json)?;
                 if plan.dry_run {
                     return Err(anyhow!("Plan has dry_run=true; cannot apply"));
                 }
 
-                if dry_run {
-                    plan.dry_run = true;
-                }
+                let pipeline = Pipeline::new(&plan.scope);
+                let intent = pipeline.parse_intent("apply plan")?;
+                let validation = pipeline.validate(&plan, &intent);
 
-                let intent = crate::agent::TaskIntentParser::default().parse("apply plan")?;
-                let validator = crate::agent::PlanValidator;
-                let validation = validator.validate(&plan, &intent);
-
-                if (validation.has_blocked || validation.has_invalid) && !force {
-                    return Err(anyhow!("Plan has blocked or invalid operations. Use --force to override."));
-                }
-
-                let executor = crate::agent::Executor;
-                let result = executor.execute_with_options(&plan, &validation, force)?;
+                let apply_options = crate::agent::ApplyOptions {
+                    force,
+                    dry_run,
+                };
+                let result = pipeline.apply(&plan, &validation, &apply_options)?;
                 let json_output = serde_json::to_string_pretty(&result)?;
                 write_output(&json_output, output)?;
             }
@@ -449,32 +428,15 @@ impl Cli {
                 let log_json = std::fs::read_to_string(&log_file)?;
                 let log: crate::agent::OperationLog = serde_json::from_str(&log_json)?;
 
-                let executor = crate::agent::Executor;
+                let pipeline = Pipeline::default();
 
-                if dry_run {
-                    let result = crate::agent::UndoResult {
-                        log_id: log.id.clone(),
-                        applied_undoes: Vec::new(),
-                        conflicts: log.undoable_entries()
-                            .iter()
-                            .map(|e| crate::agent::UndoConflict::SourceMissing {
-                                path: e.applied_target.clone(),
-                                message: format!("Would undo: {} -> {}", e.applied_target.display(), e.original_source.display()),
-                            })
-                            .collect(),
-                        total_undo_operations: log.undoable_entries().len(),
-                        completed_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    };
-                    let json_output = serde_json::to_string_pretty(&result)?;
-                    write_output(&json_output, output)?;
+                let result = if dry_run {
+                    pipeline.preview_undo(&log)
                 } else {
-                    let result = executor.undo(&log)?;
-                    let json_output = serde_json::to_string_pretty(&result)?;
-                    write_output(&json_output, output)?;
-                }
+                    pipeline.undo(&log)?
+                };
+                let json_output = serde_json::to_string_pretty(&result)?;
+                write_output(&json_output, output)?;
             }
         }
         Ok(())

@@ -139,6 +139,7 @@ const DATA_EXTS: &[&str] = &["db", "sqlite", "sqlite3", "dat", "bin"];
 const CONFIG_EXTS: &[&str] = &["conf", "cfg", "ini", "env", "properties"];
 
 impl EvidenceAnalyzer {
+    #[allow(dead_code)]
     pub fn analyze(&self, intent: &TaskIntent) -> Result<TaskAnalysis, AnalyzerError> {
         let start = std::time::Instant::now();
         let scope = self.extract_scope(intent);

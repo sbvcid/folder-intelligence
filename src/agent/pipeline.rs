@@ -1,6 +1,7 @@
 use crate::agent::intent::{TaskIntent, TaskIntentParser, IntentParseError, Goal};
 use crate::agent::analysis::{EvidenceAnalyzer, TaskAnalysis, AnalyzerError};
 use crate::agent::recommendation::{RecommendationEngine, Recommendation, RecommendationError};
+use crate::agent::clarification::ClarificationEngine;
 use crate::agent::plan::{OperationPlan, PlanGenerator, PlanError};
 use crate::agent::validate::{PlanValidator, ValidationResult, PlanPreview};
 use crate::agent::executor::{Executor, ApplyResult, ApplyError, OperationLog, UndoResult};
@@ -9,23 +10,23 @@ use crate::scanner::Scanner;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[allow(dead_code)]
 pub struct Pipeline {
     parser: TaskIntentParser,
     analyzer: EvidenceAnalyzer,
     recommender: RecommendationEngine,
+    clarifier: ClarificationEngine,
     planner: PlanGenerator,
     validator: PlanValidator,
     executor: Executor,
 }
 
-#[allow(dead_code)]
 impl Default for Pipeline {
     fn default() -> Self {
         Pipeline {
             parser: TaskIntentParser::default(),
             analyzer: EvidenceAnalyzer,
             recommender: RecommendationEngine,
+            clarifier: ClarificationEngine,
             planner: PlanGenerator,
             validator: PlanValidator,
             executor: Executor,
@@ -33,13 +34,13 @@ impl Default for Pipeline {
     }
 }
 
-#[allow(dead_code)]
 impl Pipeline {
     pub fn new(scope: &Path) -> Self {
         Pipeline {
             parser: TaskIntentParser::new(scope.to_path_buf()),
             analyzer: EvidenceAnalyzer,
             recommender: RecommendationEngine,
+            clarifier: ClarificationEngine,
             planner: PlanGenerator,
             validator: PlanValidator,
             executor: Executor,
@@ -83,6 +84,7 @@ impl Pipeline {
     }
 
     /// Analyze using pre-scanned evidence (no filesystem re-scan).
+    #[allow(dead_code)]
     pub fn analyze_with_evidence(
         &self,
         intent: &TaskIntent,
@@ -102,6 +104,11 @@ impl Pipeline {
         analysis: &TaskAnalysis,
     ) -> Result<Recommendation, PipelineError> {
         Ok(self.recommender.recommend(intent, analysis)?)
+    }
+
+    /// Summarize a recommendation for user clarification.
+    pub fn clarify(&self, recommendation: &Recommendation) -> String {
+        self.clarifier.summarize(recommendation)
     }
 
     /// Generate an operation plan from a recommendation.
@@ -153,10 +160,29 @@ impl Pipeline {
             )));
         }
 
+        if validation.has_conflicts {
+            return Err(PipelineError::Apply(ApplyError::InvalidPlan(
+                "Plan has CONFLICT operations (overlapping destinations, circular moves).".to_string(),
+            )));
+        }
+
         if validation.has_blocked && !options.force {
             return Err(PipelineError::Apply(ApplyError::InvalidPlan(
                 "Plan has BLOCKED operations. Use --force to skip them.".to_string(),
             )));
+        }
+
+        if options.dry_run {
+            let mut log = OperationLog::new(&plan.id);
+            log.finalize();
+            return Ok(ApplyResult {
+                plan_id: plan.id.clone(),
+                log,
+                is_complete: false,
+                can_undo: false,
+                undo_supported_count: validation.executable_operations,
+                undo_unsupported_count: 0,
+            });
         }
 
         self.executor
@@ -171,10 +197,16 @@ impl Pipeline {
         self.executor.undo(log).map_err(PipelineError::Apply)
     }
 
+    /// Preview what undoing an operation log would do, without mutating the filesystem.
+    pub fn preview_undo(&self, log: &OperationLog) -> UndoResult {
+        self.executor.preview_undo(log)
+    }
+
     /// Convenience method: run the full pipeline in one call.
     ///
     /// By default, this runs to plan generation and validation but does NOT execute.
     /// Set `options.execute = true` to apply (requires explicit approval).
+    #[allow(dead_code)]
     pub fn run(
         &self,
         request: &str,
@@ -228,7 +260,6 @@ pub struct PipelineOptions {
     pub execute: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct ApplyOptions {
     pub force: bool,
@@ -247,7 +278,6 @@ pub struct PipelineResult {
     pub apply: Option<ApplyResult>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PipelineError {
     IntentParse(String),
@@ -509,5 +539,182 @@ mod tests {
             result,
             Err(PipelineError::Apply(ApplyError::InvalidPlan(msg))) if msg.contains("INVALID")
         ));
+    }
+
+    #[test]
+    fn test_cli_apply_dry_run_does_not_mutate() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        let source_file = scope.join("doc.pdf");
+        fs::write(&source_file, "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
+        let validation = pipeline.validate(&plan, &intent);
+
+        let result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: true,
+                },
+            )
+            .unwrap();
+
+        assert!(!result.is_complete);
+        assert!(result.log.entries.is_empty());
+        assert!(source_file.exists(), "dry-run apply must not mutate filesystem");
+    }
+
+    #[test]
+    fn test_cli_apply_rejects_conflict() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "test").unwrap();
+        fs::write(scope.join("img.jpg"), "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
+        let mut validation = pipeline.validate(&plan, &intent);
+        validation.has_conflicts = true;
+
+        let result = pipeline.apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: true,
+                dry_run: false,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(PipelineError::Apply(ApplyError::InvalidPlan(msg))) if msg.contains("CONFLICT")
+        ));
+    }
+
+    #[test]
+    fn test_cli_apply_force_bypasses_blocked_not_invalid() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "test").unwrap();
+        fs::write(scope.join("img.jpg"), "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
+        let mut validation = pipeline.validate(&plan, &intent);
+
+        // With force=true, BLOCKED operations should be allowed through
+        validation.has_blocked = true;
+        let result = pipeline.apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: true,
+                dry_run: false,
+            },
+        );
+        assert!(result.is_ok(), "force must bypass BLOCKED operations");
+
+        // INVALID operations must still be rejected even with force
+        validation.has_invalid = true;
+        let result = pipeline.apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: true,
+                dry_run: false,
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(PipelineError::Apply(ApplyError::InvalidPlan(msg))) if msg.contains("INVALID")
+        ));
+    }
+
+    #[test]
+    fn test_cli_undo_dry_run_does_not_mutate() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "test").unwrap();
+        fs::write(scope.join("img.jpg"), "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        // Execute a plan to get a log
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
+        let validation = pipeline.validate(&plan, &intent);
+        let apply_result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .unwrap();
+
+        let undoable = apply_result.log.undoable_entries();
+
+        if undoable.is_empty() {
+            // No undoable operations; skip mutation verification
+            let preview = pipeline.preview_undo(&apply_result.log);
+            assert_eq!(preview.total_undo_operations, 0);
+            return;
+        }
+
+        // Snapshot filesystem state before undo dry-run
+        let applied_target = &undoable[0].applied_target;
+        let target_existed_before = applied_target.exists();
+
+        // Undo dry-run (preview) should not mutate filesystem
+        let preview = pipeline.preview_undo(&apply_result.log);
+        assert_eq!(preview.applied_undoes.len(), 0);
+        assert!(preview.total_undo_operations > 0);
+        assert_eq!(applied_target.exists(), target_existed_before);
+
+        // Undo (actual) should produce results
+        let undo_result = pipeline.undo(&apply_result.log).unwrap();
+        assert!(undo_result.total_undo_operations > 0);
+    }
+
+    #[test]
+    fn test_cli_clarify_uses_pipeline() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "test").unwrap();
+        fs::write(scope.join("img.jpg"), "test").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let summary = pipeline.clarify(&recommendation);
+
+        assert!(!summary.is_empty());
     }
 }

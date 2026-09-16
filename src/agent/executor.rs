@@ -239,6 +239,10 @@ impl Executor {
             .validated_operations
             .iter()
             .any(|v| v.status.is_invalid());
+        let has_conflicts = validation
+            .validated_operations
+            .iter()
+            .any(|v| v.status.is_conflict());
         let has_blocked = validation
             .validated_operations
             .iter()
@@ -247,6 +251,12 @@ impl Executor {
         if has_invalid {
             return Err(ApplyError::InvalidPlan(
                 "Plan has INVALID operations (missing source, path outside scope, etc.)".to_string(),
+            ));
+        }
+
+        if has_conflicts {
+            return Err(ApplyError::InvalidPlan(
+                "Plan has CONFLICT operations (overlapping destinations, circular moves).".to_string(),
             ));
         }
 
@@ -571,6 +581,29 @@ impl Executor {
             total_undo_operations: undo_count,
             completed_at: now_secs(),
         })
+    }
+
+    pub fn preview_undo(&self, log: &OperationLog) -> UndoResult {
+        let undoable = log.undoable_entries();
+        let conflicts = undoable
+            .iter()
+            .map(|e| UndoConflict::SourceMissing {
+                path: e.applied_target.clone(),
+                message: format!(
+                    "Would undo: {} -> {}",
+                    e.applied_target.display(),
+                    e.original_source.display()
+                ),
+            })
+            .collect();
+
+        UndoResult {
+            log_id: log.id.clone(),
+            applied_undoes: Vec::new(),
+            conflicts,
+            total_undo_operations: undoable.len(),
+            completed_at: now_secs(),
+        }
     }
 
     fn generate_undo_operation(

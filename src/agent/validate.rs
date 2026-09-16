@@ -35,7 +35,6 @@ impl ValidationStatus {
         matches!(self, ValidationStatus::BlockedByConstraint(_))
     }
 
-    #[allow(dead_code)]
     pub fn is_conflict(&self) -> bool {
         matches!(self, ValidationStatus::Conflict(_))
     }
