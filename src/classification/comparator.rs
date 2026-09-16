@@ -1,5 +1,5 @@
-use crate::evidence::DirectoryEvidence;
 use crate::classification::input::{CandidateEvidence, TargetEvidence};
+use crate::evidence::DirectoryEvidence;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -28,18 +28,24 @@ pub struct EvidenceComparison {
 pub struct EvidenceComparator;
 
 impl EvidenceComparator {
-    pub fn compare(target: &TargetEvidence, candidate: &CandidateEvidence) -> Vec<EvidenceComparison> {
+    pub fn compare(
+        target: &TargetEvidence,
+        candidate: &CandidateEvidence,
+    ) -> Vec<EvidenceComparison> {
         let mut comparisons = Vec::new();
 
         // Build aggregate evidence from candidate directory + its children
         let agg_ext_hist = Self::aggregate_extensions(&candidate.directory, &candidate.children);
         let agg_file_count = Self::aggregate_file_count(&candidate.directory, &candidate.children);
-        let agg_child_dir_names = Self::aggregate_child_dir_names(&candidate.directory, &candidate.children);
-        let agg_identifiers = Self::aggregate_identifiers(&candidate.directory, &candidate.children);
+        let agg_child_dir_names =
+            Self::aggregate_child_dir_names(&candidate.directory, &candidate.children);
+        let agg_identifiers =
+            Self::aggregate_identifiers(&candidate.directory, &candidate.children);
         let agg_id_types = Self::aggregate_id_types(&candidate.directory, &candidate.children);
 
         // 1. Extension similarity (Jaccard on aggregated extension histograms)
-        let ext_score = Self::compare_extensions(&target.evidence.extension_histogram, &agg_ext_hist);
+        let ext_score =
+            Self::compare_extensions(&target.evidence.extension_histogram, &agg_ext_hist);
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::ExtensionSimilarity,
             score: ext_score,
@@ -51,11 +57,15 @@ impl EvidenceComparator {
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::FileCountSimilarity,
             score: count_score,
-            observed: format!("File count similarity score: {:.2} (target: {}, candidate: {})", count_score, target.evidence.file_count, agg_file_count),
+            observed: format!(
+                "File count similarity score: {:.2} (target: {}, candidate: {})",
+                count_score, target.evidence.file_count, agg_file_count
+            ),
         });
 
         // 3. Structure similarity (child directory names / subfolder profile)
-        let struct_score = Self::compare_structure(&target.evidence.child_directory_names, &agg_child_dir_names);
+        let struct_score =
+            Self::compare_structure(&target.evidence.child_directory_names, &agg_child_dir_names);
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::StructureSimilarity,
             score: struct_score,
@@ -63,7 +73,8 @@ impl EvidenceComparator {
         });
 
         // 4. Identifier overlap
-        let id_overlap = Self::compare_identifiers(&target.evidence.syntactic_identifiers, &agg_identifiers);
+        let id_overlap =
+            Self::compare_identifiers(&target.evidence.syntactic_identifiers, &agg_identifiers);
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::IdentifierOverlap,
             score: id_overlap,
@@ -71,7 +82,10 @@ impl EvidenceComparator {
         });
 
         // 5. Identifier type match
-        let type_match = Self::compare_identifier_types(&target.evidence.identifier_summary.by_type, &agg_id_types);
+        let type_match = Self::compare_identifier_types(
+            &target.evidence.identifier_summary.by_type,
+            &agg_id_types,
+        );
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::IdentifierTypeMatch,
             score: type_match,
@@ -83,7 +97,10 @@ impl EvidenceComparator {
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::DepthSimilarity,
             score: depth_score,
-            observed: format!("Tree depth similarity score: {:.2} (target depth: {})", depth_score, target.evidence.depth),
+            observed: format!(
+                "Tree depth similarity score: {:.2} (target depth: {})",
+                depth_score, target.evidence.depth
+            ),
         });
 
         // 7. Empty match
@@ -97,7 +114,10 @@ impl EvidenceComparator {
         comparisons.push(EvidenceComparison {
             comparison_type: ComparisonType::EmptyMatch,
             score: empty_score,
-            observed: format!("Empty state match: target is_empty={}, candidate is_empty={}", target.evidence.is_empty, candidate.directory.is_empty),
+            observed: format!(
+                "Empty state match: target is_empty={}, candidate is_empty={}",
+                target.evidence.is_empty, candidate.directory.is_empty
+            ),
         });
 
         comparisons
@@ -121,10 +141,7 @@ impl EvidenceComparator {
         hist
     }
 
-    fn aggregate_file_count(
-        dir: &DirectoryEvidence,
-        children: &[DirectoryEvidence],
-    ) -> u64 {
+    fn aggregate_file_count(dir: &DirectoryEvidence, children: &[DirectoryEvidence]) -> u64 {
         let child_total: u64 = children.iter().map(|c| c.file_count).sum();
         dir.file_count + child_total
     }
@@ -167,7 +184,10 @@ impl EvidenceComparator {
         types
     }
 
-    fn compare_extensions(target_hist: &HashMap<String, u64>, candidate_hist: &HashMap<String, u64>) -> f64 {
+    fn compare_extensions(
+        target_hist: &HashMap<String, u64>,
+        candidate_hist: &HashMap<String, u64>,
+    ) -> f64 {
         if target_hist.is_empty() && candidate_hist.is_empty() {
             return 1.0;
         }
@@ -178,7 +198,8 @@ impl EvidenceComparator {
         let mut intersection = 0.0;
         let mut union = 0.0;
 
-        let all_keys: std::collections::HashSet<_> = target_hist.keys().chain(candidate_hist.keys()).collect();
+        let all_keys: std::collections::HashSet<_> =
+            target_hist.keys().chain(candidate_hist.keys()).collect();
         for ext in all_keys {
             let t_count = *target_hist.get(ext).unwrap_or(&0) as f64;
             let c_count = *candidate_hist.get(ext).unwrap_or(&0) as f64;
@@ -186,7 +207,11 @@ impl EvidenceComparator {
             union += t_count.max(c_count);
         }
 
-        if union == 0.0 { 0.0 } else { intersection / union }
+        if union == 0.0 {
+            0.0
+        } else {
+            intersection / union
+        }
     }
 
     fn compare_file_counts(target_count: u64, candidate_total: u64) -> f64 {
@@ -198,11 +223,7 @@ impl EvidenceComparator {
         }
         let ratio = target_count as f64 / candidate_total as f64;
         // Score based on ratio — 1.0 when equal, falls off as ratio diverges
-        let score = if ratio >= 1.0 {
-            1.0 / ratio
-        } else {
-            ratio
-        };
+        let score = if ratio >= 1.0 { 1.0 / ratio } else { ratio };
         score.clamp(0.0, 1.0)
     }
 
@@ -210,32 +231,56 @@ impl EvidenceComparator {
         if target_names.is_empty() && candidate_names.is_empty() {
             return 1.0;
         }
-        let candidate_set: std::collections::HashSet<String> = candidate_names.iter().cloned().collect();
+        let candidate_set: std::collections::HashSet<String> =
+            candidate_names.iter().cloned().collect();
         let target_set: std::collections::HashSet<String> = target_names.iter().cloned().collect();
         if target_set.is_empty() && candidate_set.is_empty() {
             return 1.0;
         }
-        let intersection = target_set.iter().filter(|n| candidate_set.contains(n.as_str())).count() as f64;
+        let intersection = target_set
+            .iter()
+            .filter(|n| candidate_set.contains(n.as_str()))
+            .count() as f64;
         let union = target_set.len() + candidate_set.len() - intersection as usize;
-        if union == 0 { 0.0 } else { intersection / union as f64 }
+        if union == 0 {
+            0.0
+        } else {
+            intersection / union as f64
+        }
     }
 
-    fn compare_identifiers(target_ids: &[crate::evidence::SyntacticIdentifier], candidate_ids: &[crate::evidence::SyntacticIdentifier]) -> f64 {
-        let candidate_set: std::collections::HashSet<_> = candidate_ids.iter().map(|id| id.value.clone()).collect();
-        let target_set: std::collections::HashSet<_> = target_ids.iter().map(|id| id.value.clone()).collect();
+    fn compare_identifiers(
+        target_ids: &[crate::evidence::SyntacticIdentifier],
+        candidate_ids: &[crate::evidence::SyntacticIdentifier],
+    ) -> f64 {
+        let candidate_set: std::collections::HashSet<_> =
+            candidate_ids.iter().map(|id| id.value.clone()).collect();
+        let target_set: std::collections::HashSet<_> =
+            target_ids.iter().map(|id| id.value.clone()).collect();
         if target_set.is_empty() && candidate_set.is_empty() {
             return 0.5;
         }
-        let intersection = target_set.iter().filter(|v| candidate_set.contains(*v)).count() as f64;
+        let intersection = target_set
+            .iter()
+            .filter(|v| candidate_set.contains(*v))
+            .count() as f64;
         let union = target_set.len() + candidate_set.len() - intersection as usize;
-        if union == 0 { 0.5 } else { intersection / union as f64 }
+        if union == 0 {
+            0.5
+        } else {
+            intersection / union as f64
+        }
     }
 
-    fn compare_identifier_types(target_types: &HashMap<crate::evidence::IdentifierType, usize>, candidate_types: &HashMap<crate::evidence::IdentifierType, usize>) -> f64 {
+    fn compare_identifier_types(
+        target_types: &HashMap<crate::evidence::IdentifierType, usize>,
+        candidate_types: &HashMap<crate::evidence::IdentifierType, usize>,
+    ) -> f64 {
         if target_types.is_empty() && candidate_types.is_empty() {
             return 0.5;
         }
-        let all_keys: std::collections::HashSet<_> = target_types.keys().chain(candidate_types.keys()).collect();
+        let all_keys: std::collections::HashSet<_> =
+            target_types.keys().chain(candidate_types.keys()).collect();
         let mut intersection = 0.0;
         let mut union = 0.0;
         for t in all_keys {
@@ -244,7 +289,11 @@ impl EvidenceComparator {
             intersection += t_cnt.min(c_cnt);
             union += t_cnt.max(c_cnt);
         }
-        if union == 0.0 { 0.5 } else { intersection / union }
+        if union == 0.0 {
+            0.5
+        } else {
+            intersection / union
+        }
     }
 
     fn compare_depth(target_depth: usize, candidate_dir: &DirectoryEvidence) -> f64 {

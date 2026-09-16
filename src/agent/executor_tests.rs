@@ -1,13 +1,12 @@
 use super::*;
 use crate::agent::plan::{FileSystemOperation, OperationPlan};
-use crate::agent::validate::{ValidatedOperation, ValidationResult, ValidationStatus, ValidationSummary};
+use crate::agent::validate::{
+    ValidatedOperation, ValidationResult, ValidationStatus, ValidationSummary,
+};
 use std::fs;
 use tempfile::tempdir;
 
-fn create_full_plan(
-    dir: &std::path::Path,
-    dry_run: bool,
-) -> (OperationPlan, ValidationResult) {
+fn create_full_plan(dir: &std::path::Path, dry_run: bool) -> (OperationPlan, ValidationResult) {
     let source = dir.join("source.txt");
     let dest = dir.join("dest.txt");
     fs::write(&source, "test content").unwrap();
@@ -31,6 +30,7 @@ fn create_full_plan(
         has_conflicts: false,
         dry_run,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -86,7 +86,9 @@ fn test_execute_create_dir_operation() {
         id: "test-plan-2".to_string(),
         recommendation_id: "rec-2".to_string(),
         scope: dir.path().to_path_buf(),
-        operations: vec![FileSystemOperation::CreateDir { path: new_dir.clone() }],
+        operations: vec![FileSystemOperation::CreateDir {
+            path: new_dir.clone(),
+        }],
         estimated_impact: crate::agent::EstimatedImpact {
             files_moved: 0,
             dirs_created: 1,
@@ -98,6 +100,7 @@ fn test_execute_create_dir_operation() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -108,7 +111,9 @@ fn test_execute_create_dir_operation() {
         plan_id: plan.id.clone(),
         scope: dir.path().to_path_buf(),
         validated_operations: vec![ValidatedOperation {
-            operation: FileSystemOperation::CreateDir { path: new_dir.clone() },
+            operation: FileSystemOperation::CreateDir {
+                path: new_dir.clone(),
+            },
             status: ValidationStatus::Valid,
             warnings: vec![],
             dependencies: vec![],
@@ -154,6 +159,7 @@ fn test_execute_delete_operation() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -184,7 +190,10 @@ fn test_execute_delete_operation() {
     let result = executor.execute(&plan, &validation, false).unwrap();
 
     assert!(!file.exists());
-    assert_eq!(result.log.entries[0].status, ExecutionStatus::UndoNotSupported);
+    assert_eq!(
+        result.log.entries[0].status,
+        ExecutionStatus::UndoNotSupported
+    );
     assert!(!result.log.entries[0].undo_supported);
 }
 
@@ -252,6 +261,7 @@ fn test_execute_move_failure() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -349,6 +359,7 @@ fn test_undo_with_target_exists() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -415,6 +426,7 @@ fn test_undo_delete_is_not_undoable() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -446,7 +458,10 @@ fn test_undo_delete_is_not_undoable() {
 
     let undo_result = executor.undo(&apply_result.log).unwrap();
     assert!(!undo_result.conflicts.is_empty());
-    assert!(undo_result.conflicts.iter().any(|c| matches!(c, UndoConflict::NotUndoable { .. })));
+    assert!(undo_result
+        .conflicts
+        .iter()
+        .any(|c| matches!(c, UndoConflict::NotUndoable { .. })));
 }
 
 #[test]
@@ -498,6 +513,7 @@ fn test_dry_run_flag_on_plan() {
         has_conflicts: false,
         dry_run: true,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let validation = ValidationResult {
@@ -726,6 +742,7 @@ fn test_dry_run_flag_prevents_execution() {
         has_conflicts: false,
         dry_run: true,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -764,7 +781,7 @@ fn test_dry_run_flag_prevents_execution() {
 fn test_force_bypasses_blocked_not_invalid() {
     let dir = tempdir().unwrap();
     let source = dir.path().join("source.txt");
-    let dest = dir.path().join("dest.txt");
+    let _dest = dir.path().join("dest.txt");
     fs::write(&source, "test").unwrap();
 
     let plan = OperationPlan {
@@ -786,6 +803,7 @@ fn test_force_bypasses_blocked_not_invalid() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -819,7 +837,9 @@ fn test_force_bypasses_blocked_not_invalid() {
     assert!(result_no_force.is_err());
     assert!(source.exists());
 
-    let result_force = executor.execute_with_options(&plan, &validation, true).unwrap();
+    let result_force = executor
+        .execute_with_options(&plan, &validation, true)
+        .unwrap();
     assert!(!result_force.log.entries.is_empty());
     assert!(result_force.log.entries[0].status.is_skipped());
     assert!(source.exists());
@@ -851,6 +871,7 @@ fn test_force_does_not_bypass_invalid() {
         has_conflicts: false,
         dry_run: false,
         created_at: 1234567890,
+        validation_context: None,
     };
 
     let mut summary = ValidationSummary::new();
@@ -882,4 +903,136 @@ fn test_force_does_not_bypass_invalid() {
     let result = executor.execute_with_options(&plan, &validation, true);
 
     assert!(matches!(result, Err(ApplyError::InvalidPlan(msg)) if msg.contains("INVALID")));
+}
+
+#[test]
+fn test_phase6c_executor_conflict_plus_force_rejected() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "test").unwrap();
+    fs::write(&dest, "conflict").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-conflict-force".to_string(),
+        recommendation_id: "rec-conflict".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: true,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.conflicts = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Conflict("Destination file exists".to_string()),
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: true,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 0,
+    };
+
+    let executor = Executor::default();
+    let result = executor.execute_with_options(&plan, &validation, true);
+
+    assert!(
+        matches!(
+            result,
+            Err(ApplyError::InvalidPlan(msg)) if msg.contains("CONFLICT")
+        ),
+        "Executor must reject CONFLICT even with force"
+    );
+
+    assert!(
+        source.exists(),
+        "source must still exist (executor defense-in-depth)"
+    );
+}
+
+#[test]
+fn test_phase6c_executor_dry_run_rejected_on_execute() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("src.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "test").unwrap();
+
+    let plan = OperationPlan {
+        id: "test-dry-run-exec".to_string(),
+        recommendation_id: "rec-dry".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: true,
+        created_at: 1234567890,
+        validation_context: Some(crate::agent::PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    let executor = Executor::default();
+    let result = executor.execute_with_options(&plan, &validation, false);
+
+    assert!(matches!(result, Err(ApplyError::DryRunFlagSet)));
+    assert!(source.exists(), "source must still exist");
+    assert!(!dest.exists(), "dest must not be created for dry-run plan");
 }

@@ -1,11 +1,11 @@
 use crate::classification::ai_provider::{
-    validate_ai_result, AiClassificationConstraints, AiClassifier, AiClassificationError,
-    AiClassificationRequest,
+    validate_ai_result, AiClassificationConstraints, AiClassificationError,
+    AiClassificationRequest, AiClassifier,
 };
 use crate::classification::input::ClassificationInput;
 use crate::classification::result::{
-    ClassificationDecision, ClassificationResult, ConfidenceBand,
-    SupportingEvidence, UncertaintyReason,
+    ClassificationDecision, ClassificationResult, ConfidenceBand, SupportingEvidence,
+    UncertaintyReason,
 };
 use crate::classification::{ClassificationConfig, DecisionEngine, TargetEvidence};
 use std::time::Duration;
@@ -46,10 +46,14 @@ impl AiClassifier for MockAiClassifier {
             simulated.decision = ClassificationDecision::MoveExisting;
             simulated.confidence = (baseline.confidence).min(0.85);
             simulated.selected_candidate = baseline.selected_candidate.clone();
-            simulated.supporting_evidence = BaselineEvidence::enhance(&baseline.supporting_evidence);
+            simulated.supporting_evidence =
+                BaselineEvidence::enhance(&baseline.supporting_evidence);
             simulated.uncertainty.clear();
         } else if baseline.confidence >= 0.40 {
-            if baseline.uncertainty.contains(&UncertaintyReason::AmbiguousCandidates) {
+            if baseline
+                .uncertainty
+                .contains(&UncertaintyReason::AmbiguousCandidates)
+            {
                 simulated.decision = ClassificationDecision::AskUser;
                 simulated.confidence = baseline.confidence.min(0.60);
             } else {

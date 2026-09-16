@@ -1,50 +1,45 @@
-pub mod intent;
 pub mod analysis;
-pub mod recommendation;
 pub mod clarification;
-pub mod plan;
-pub mod validate;
 pub mod executor;
+pub mod intent;
 pub mod pipeline;
+pub mod plan;
+pub mod recommendation;
+pub mod validate;
 
 #[allow(unused_imports)]
-pub use intent::{
-    TaskIntent, Goal, ConstraintSet, CleanRule, TaskIntentParser, IntentParseError,
-};
-#[allow(unused_imports)]
 pub use analysis::{
-    TaskAnalysis, EvidenceAnalyzer, StructureSummary, ContentGroup, ContentType,
-    Anomaly, AnomalyType, Ambiguity, AmbiguityReason, EvidenceGap, GapType,
-    CandidateCategory, AnalyzerError,
-};
-#[allow(unused_imports)]
-pub use recommendation::{
-    Recommendation, RecommendationStrategy, ProposedCategory, ProposedOperation,
-    ConstraintCheck, ConstraintViolation, ClarificationQuestion, RecommendationWarning,
-    RecommendationEngine, RecommendationError,
+    Ambiguity, AmbiguityReason, AnalyzerError, Anomaly, AnomalyType, CandidateCategory,
+    ContentGroup, ContentType, EvidenceAnalyzer, EvidenceGap, GapType, StructureSummary,
+    TaskAnalysis,
 };
 #[allow(unused_imports)]
 pub use clarification::{
-    DecisionCategory, DecisionAnswer, UserDecision, ClarifiedIntent,
-    ClarificationEngine, ClarificationError,
-    apply_evidence_gaps_to_questions,
-};
-#[allow(unused_imports)]
-pub use plan::{
-    FileSystemOperation, OperationPlan, EstimatedImpact,
-    ValidationWarning, WarningType, PlanGenerator, PlanError,
-};
-#[allow(unused_imports)]
-pub use validate::{
-    ValidationStatus, ValidatedOperation, ValidationSummary, ValidationResult,
-    PlanValidator, PlanPreview,
+    apply_evidence_gaps_to_questions, ClarificationEngine, ClarificationError, ClarifiedIntent,
+    DecisionAnswer, DecisionCategory, UserDecision,
 };
 #[allow(unused_imports)]
 pub use executor::{
-    ExecutionStatus, UndoConflict, LogEntry, OperationLog, UndoLogEntry, UndoResult,
-    ApplyError, ApplyResult, Executor,
+    ApplyError, ApplyResult, ExecutionStatus, Executor, LogEntry, OperationLog, UndoConflict,
+    UndoLogEntry, UndoResult,
 };
 #[allow(unused_imports)]
-pub use pipeline::{
-    Pipeline, PipelineOptions, ApplyOptions, PipelineResult, PipelineError,
+pub use intent::{CleanRule, ConstraintSet, Goal, IntentParseError, TaskIntent, TaskIntentParser};
+#[allow(unused_imports)]
+pub use pipeline::{ApplyOptions, Pipeline, PipelineError, PipelineOptions, PipelineResult};
+#[allow(unused_imports)]
+pub use plan::{
+    EstimatedImpact, FileSystemOperation, OperationPlan, PlanError, PlanGenerator,
+    PlanValidationContext, ValidationWarning, WarningType,
+};
+#[allow(unused_imports)]
+pub use recommendation::{
+    ClarificationQuestion, ConstraintCheck, ConstraintViolation, ProposedCategory,
+    ProposedOperation, Recommendation, RecommendationEngine, RecommendationError,
+    RecommendationStrategy, RecommendationWarning,
+};
+#[allow(unused_imports)]
+pub use validate::{
+    PlanPreview, PlanValidator, ValidatedOperation, ValidationResult, ValidationStatus,
+    ValidationSummary,
 };

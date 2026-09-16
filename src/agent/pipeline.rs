@@ -1,10 +1,10 @@
-use crate::agent::intent::{TaskIntent, TaskIntentParser, IntentParseError, Goal};
-use crate::agent::analysis::{EvidenceAnalyzer, TaskAnalysis, AnalyzerError};
-use crate::agent::recommendation::{RecommendationEngine, Recommendation, RecommendationError};
+use crate::agent::analysis::{AnalyzerError, EvidenceAnalyzer, TaskAnalysis};
 use crate::agent::clarification::ClarificationEngine;
-use crate::agent::plan::{OperationPlan, PlanGenerator, PlanError};
-use crate::agent::validate::{PlanValidator, ValidationResult, PlanPreview};
-use crate::agent::executor::{Executor, ApplyResult, ApplyError, OperationLog, UndoResult};
+use crate::agent::executor::{ApplyError, ApplyResult, Executor, OperationLog, UndoResult};
+use crate::agent::intent::{Goal, IntentParseError, TaskIntent, TaskIntentParser};
+use crate::agent::plan::{OperationPlan, PlanError, PlanGenerator, PlanValidationContext};
+use crate::agent::recommendation::{Recommendation, RecommendationEngine, RecommendationError};
+use crate::agent::validate::{PlanPreview, PlanValidator, ValidationResult};
 use crate::evidence::ScanLimits;
 use crate::scanner::Scanner;
 use std::path::{Path, PathBuf};
@@ -58,9 +58,9 @@ impl Pipeline {
         let scope = self.extract_scope(intent);
 
         if !scope.is_dir() {
-            return Err(PipelineError::Analysis(
-                AnalyzerError::ScopeNotADirectory(scope),
-            ));
+            return Err(PipelineError::Analysis(AnalyzerError::ScopeNotADirectory(
+                scope,
+            )));
         }
 
         let limits = ScanLimits::default();
@@ -70,9 +70,9 @@ impl Pipeline {
             .map_err(|e| PipelineError::Io(e.to_string()))?;
 
         if scan_result.evidence.is_empty() {
-            return Err(PipelineError::Analysis(
-                AnalyzerError::ScopeNotScannable(scope),
-            ));
+            return Err(PipelineError::Analysis(AnalyzerError::ScopeNotScannable(
+                scope,
+            )));
         }
 
         let scope_evidence = scan_result.evidence.into_iter().next().unwrap();
@@ -117,19 +117,17 @@ impl Pipeline {
         &self,
         recommendation: &Recommendation,
         analysis: &TaskAnalysis,
+        intent: &TaskIntent,
     ) -> Result<OperationPlan, PipelineError> {
         let mut plan = self.planner.generate(recommendation, analysis, &[])?;
+        plan.validation_context = Some(PlanValidationContext::from(&intent.constraints));
         plan.dry_run = false;
         Ok(plan)
     }
 
-    /// Validate a plan against intent constraints.
-    pub fn validate(
-        &self,
-        plan: &OperationPlan,
-        intent: &TaskIntent,
-    ) -> ValidationResult {
-        self.validator.validate(plan, intent)
+    /// Validate a plan against its persisted constraints and current filesystem state.
+    pub fn validate(&self, plan: &OperationPlan) -> ValidationResult {
+        self.validator.validate(plan)
     }
 
     /// Render a human-readable preview of a plan and its validation.
@@ -162,7 +160,8 @@ impl Pipeline {
 
         if validation.has_conflicts {
             return Err(PipelineError::Apply(ApplyError::InvalidPlan(
-                "Plan has CONFLICT operations (overlapping destinations, circular moves).".to_string(),
+                "Plan has CONFLICT operations (overlapping destinations, circular moves)."
+                    .to_string(),
             )));
         }
 
@@ -215,8 +214,8 @@ impl Pipeline {
         let intent = self.parse_intent(request)?;
         let analysis = self.analyze(&intent)?;
         let recommendation = self.recommend(&intent, &analysis)?;
-        let mut plan = self.plan(&recommendation, &analysis)?;
-        let validation = self.validate(&plan, &intent);
+        let mut plan = self.plan(&recommendation, &analysis, &intent)?;
+        let validation = self.validate(&plan);
         let preview = self.preview(&plan, &validation);
 
         plan.dry_run = options.dry_run;
@@ -224,10 +223,14 @@ impl Pipeline {
         let apply = if options.dry_run {
             None
         } else if options.execute {
-            Some(self.apply(&plan, &validation, &ApplyOptions {
-                force: options.force,
-                dry_run: false,
-            })?)
+            Some(self.apply(
+                &plan,
+                &validation,
+                &ApplyOptions {
+                    force: options.force,
+                    dry_run: false,
+                },
+            )?)
         } else {
             None
         };
@@ -336,6 +339,8 @@ impl From<ApplyError> for PipelineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::plan::FileSystemOperation;
+    use crate::agent::validate::ValidationStatus;
     use std::fs;
     use tempfile::tempdir;
 
@@ -387,7 +392,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = pipeline.run("Organize this folder by category", &options).unwrap();
+        let result = pipeline
+            .run("Organize this folder by category", &options)
+            .unwrap();
         assert!(result.apply.is_none());
         assert!(result.plan.dry_run);
         assert!(!result.preview.is_empty());
@@ -409,7 +416,9 @@ mod tests {
             force: false,
         };
 
-        let result = pipeline.run("Organize this folder by category", &options).unwrap();
+        let result = pipeline
+            .run("Organize this folder by category", &options)
+            .unwrap();
         assert!(result.apply.is_none());
         assert!(!result.plan.dry_run);
     }
@@ -430,7 +439,9 @@ mod tests {
             force: false,
         };
 
-        let result = pipeline.run("Organize this folder by category", &options).unwrap();
+        let result = pipeline
+            .run("Organize this folder by category", &options)
+            .unwrap();
         assert!(result.apply.is_some());
     }
 
@@ -444,10 +455,12 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
 
         assert!(source_file.exists());
         assert!(!plan.dry_run);
@@ -463,11 +476,13 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
-        let validation = pipeline.validate(&plan, &intent);
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
 
         let apply_result = pipeline
             .apply(
@@ -492,12 +507,14 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let mut plan = pipeline.plan(&recommendation, &analysis).unwrap();
+        let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
         plan.dry_run = true;
-        let validation = pipeline.validate(&plan, &intent);
+        let validation = pipeline.validate(&plan);
 
         let result = pipeline.apply(
             &plan,
@@ -508,7 +525,10 @@ mod tests {
             },
         );
 
-        assert!(matches!(result, Err(PipelineError::Apply(ApplyError::DryRunFlagSet))));
+        assert!(matches!(
+            result,
+            Err(PipelineError::Apply(ApplyError::DryRunFlagSet))
+        ));
     }
 
     #[test]
@@ -519,11 +539,13 @@ mod tests {
         fs::write(scope.join("doc.pdf"), "test").unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
-        let mut validation = pipeline.validate(&plan, &intent);
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let mut validation = pipeline.validate(&plan);
         validation.has_invalid = true;
 
         let result = pipeline.apply(
@@ -551,11 +573,13 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
-        let validation = pipeline.validate(&plan, &intent);
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
 
         let result = pipeline
             .apply(
@@ -570,7 +594,10 @@ mod tests {
 
         assert!(!result.is_complete);
         assert!(result.log.entries.is_empty());
-        assert!(source_file.exists(), "dry-run apply must not mutate filesystem");
+        assert!(
+            source_file.exists(),
+            "dry-run apply must not mutate filesystem"
+        );
     }
 
     #[test]
@@ -583,11 +610,13 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
-        let mut validation = pipeline.validate(&plan, &intent);
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let mut validation = pipeline.validate(&plan);
         validation.has_conflicts = true;
 
         let result = pipeline.apply(
@@ -615,11 +644,13 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
-        let mut validation = pipeline.validate(&plan, &intent);
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let mut validation = pipeline.validate(&plan);
 
         // With force=true, BLOCKED operations should be allowed through
         validation.has_blocked = true;
@@ -660,11 +691,13 @@ mod tests {
 
         // Execute a plan to get a log
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
-        let plan = pipeline.plan(&recommendation, &analysis).unwrap();
-        let validation = pipeline.validate(&plan, &intent);
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
         let apply_result = pipeline
             .apply(
                 &plan,
@@ -710,11 +743,514 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let pipeline = Pipeline::new(&scope);
-        let intent = pipeline.parse_intent("Organize this folder by category").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let summary = pipeline.clarify(&recommendation);
 
         assert!(!summary.is_empty());
+    }
+
+    fn create_restart_scope(dir: &tempfile::TempDir) -> PathBuf {
+        let scope = dir.path().join("downloads");
+        fs::create_dir_all(&scope).unwrap();
+        fs::create_dir_all(scope.join("documents")).unwrap();
+        fs::create_dir_all(scope.join("images")).unwrap();
+        fs::write(scope.join("documents").join("doc1.pdf"), "content").unwrap();
+        fs::write(scope.join("documents").join("doc2.docx"), "content").unwrap();
+        fs::write(scope.join("images").join("photo1.jpg"), "img").unwrap();
+        fs::write(scope.join("images").join("photo2.png"), "img").unwrap();
+        fs::write(scope.join("archive.zip"), "data").unwrap();
+        fs::write(scope.join("readme.txt"), "text").unwrap();
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+        fs::create_dir_all(scope.join("Images")).unwrap();
+        scope
+    }
+
+    fn create_restart_plan(dir: &tempfile::TempDir) -> (PathBuf, OperationPlan) {
+        let scope = create_restart_scope(dir);
+        let pipeline = Pipeline::new(&scope);
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        (scope, plan)
+    }
+
+    #[test]
+    fn test_phase6c_restart_simulation() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        assert!(plan.operations.len() > 0, "plan must have operations");
+        assert!(
+            plan.validation_context.is_some(),
+            "plan must have validation context"
+        );
+        assert!(
+            !plan.dry_run,
+            "plan must be non-dry-run from Pipeline::plan()"
+        );
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        assert!(
+            reloaded.validation_context.is_some(),
+            "validation_context must survive serialization"
+        );
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+
+        assert_eq!(validation.plan_id, reloaded.id);
+        assert!(
+            validation.summary.total > 0,
+            "fresh validation must see operations"
+        );
+        assert!(
+            !validation.has_invalid,
+            "should have no invalid operations on fresh restart"
+        );
+
+        let apply_result = fresh_pipeline
+            .apply(
+                &reloaded,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .expect("should apply after restart");
+        assert!(
+            apply_result.log.total_entries > 0,
+            "should have processed operations"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_source_deleted_after_planning() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let move_op = plan
+            .operations
+            .iter()
+            .find_map(|op| {
+                if let FileSystemOperation::Move { source, .. } = op {
+                    Some(source.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("plan must have at least one Move operation");
+
+        assert!(move_op.exists());
+        std::fs::remove_file(&move_op).unwrap();
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+
+        assert!(validation.has_invalid, "source missing should be INVALID");
+        assert!(!reloaded.dry_run, "plan must be executable");
+    }
+
+    #[test]
+    fn test_phase6c_destination_conflict_after_restart() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("should parse json");
+
+        if let Some(ops) = value.get_mut("operations").and_then(|v| v.as_array_mut()) {
+            if let Some(first) = ops.first() {
+                let duplicated = first.clone();
+                ops.push(duplicated);
+            }
+        }
+
+        let tampered_json = serde_json::to_string(&value).expect("should re-serialize");
+        let conflicted_plan: OperationPlan =
+            serde_json::from_str(&tampered_json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&conflicted_plan);
+
+        assert!(
+            validation.has_conflicts,
+            "overlapping destinations should be CONFLICT"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_source_missing_after_restart() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let move_source = reloaded
+            .operations
+            .iter()
+            .find_map(|op| {
+                if let FileSystemOperation::Move { source, .. } = op {
+                    Some(source.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("plan must have Move operations");
+        std::fs::remove_file(&move_source).unwrap();
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+
+        assert!(validation.has_invalid, "source missing should be INVALID");
+
+        let result = fresh_pipeline.apply(
+            &reloaded,
+            &validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "should reject apply with invalid operations"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_scope_tampering_rejected() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("should parse json");
+
+        if let Some(ops) = value.get_mut("operations").and_then(|v| v.as_array_mut()) {
+            for op in ops.iter_mut() {
+                if let Some(move_data) = op.get_mut("move").and_then(|v| v.as_object_mut()) {
+                    if let Some(dest) = move_data.get_mut("dest") {
+                        *dest = serde_json::json!("/outside/scope/file.txt");
+                    }
+                }
+            }
+        }
+
+        let tampered_json = serde_json::to_string(&value).expect("should re-serialize");
+        let tampered_plan: OperationPlan =
+            serde_json::from_str(&tampered_json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&tampered_plan);
+
+        assert!(
+            validation.has_invalid,
+            "out-of-scope destinations must be INVALID"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_invalid_plus_force_rejected() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let move_source = plan
+            .operations
+            .iter()
+            .find_map(|op| {
+                if let FileSystemOperation::Move { source, .. } = op {
+                    Some(source.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("plan must have Move operations");
+        std::fs::remove_file(&move_source).unwrap();
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+
+        assert!(validation.has_invalid);
+
+        let result = fresh_pipeline.apply(
+            &reloaded,
+            &validation,
+            &ApplyOptions {
+                force: true,
+                dry_run: false,
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(PipelineError::Apply(crate::agent::ApplyError::InvalidPlan(msg))) if msg.contains("INVALID")
+            ),
+            "INVALID + force must still be rejected"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_conflict_plus_force_rejected() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let mut value: serde_json::Value = serde_json::from_str(&json).expect("should parse json");
+
+        if let Some(ops) = value.get_mut("operations").and_then(|v| v.as_array_mut()) {
+            if let Some(first) = ops.first() {
+                ops.push(first.clone());
+            }
+        }
+
+        let tampered_json = serde_json::to_string(&value).expect("should re-serialize");
+        let conflicted_plan: OperationPlan =
+            serde_json::from_str(&tampered_json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&conflicted_plan);
+
+        assert!(
+            validation.has_conflicts,
+            "should have conflicts from duplicated operations"
+        );
+
+        let result = fresh_pipeline.apply(
+            &conflicted_plan,
+            &validation,
+            &ApplyOptions {
+                force: true,
+                dry_run: false,
+            },
+        );
+        assert!(
+            matches!(
+                result,
+                Err(PipelineError::Apply(crate::agent::ApplyError::InvalidPlan(msg))) if msg.contains("CONFLICT")
+            ),
+            "CONFLICT + force must still be rejected"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_blocked_plus_force_skips() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+
+        let mut tampered_validation = validation.clone();
+        for v_op in &mut tampered_validation.validated_operations {
+            if v_op.status.is_valid() {
+                v_op.status = ValidationStatus::BlockedByConstraint(
+                    "Test: operation blocked by constraint".to_string(),
+                );
+            }
+        }
+        tampered_validation.has_blocked = true;
+        tampered_validation.has_invalid = false;
+        tampered_validation.has_conflicts = false;
+        tampered_validation.executable_operations = 0;
+
+        let result = fresh_pipeline.apply(
+            &reloaded,
+            &tampered_validation,
+            &ApplyOptions {
+                force: true,
+                dry_run: false,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "BLOCKED + force should proceed (skip blocked ops)"
+        );
+
+        let apply_result = result.unwrap();
+        assert!(
+            apply_result.log.skipped_count > 0,
+            "should have skipped blocked operations"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_validation_does_not_mutate_filesystem() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let files_before = collect_files(&scope);
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let _ = fresh_pipeline.validate(&plan);
+
+        let files_after = collect_files(&scope);
+        assert_eq!(
+            files_before, files_after,
+            "validation must not mutate filesystem"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_dry_run_after_serialization() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        assert!(
+            !plan.dry_run,
+            "plan must be non-dry-run from Pipeline::plan()"
+        );
+
+        let files_before = collect_files(&scope);
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+        let result = fresh_pipeline
+            .apply(
+                &reloaded,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: true,
+                },
+            )
+            .expect("dry-run apply should succeed");
+
+        assert!(!result.is_complete, "dry-run must not be complete");
+        assert!(
+            result.log.entries.is_empty(),
+            "dry-run must not log operations"
+        );
+
+        let files_after = collect_files(&scope);
+        assert_eq!(
+            files_before, files_after,
+            "dry-run must not mutate filesystem"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_apply_after_serialization() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let source_file = scope.join("documents").join("doc1.pdf");
+        assert!(source_file.exists());
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+
+        assert!(!validation.has_invalid);
+        assert!(!validation.has_conflicts);
+
+        let result = fresh_pipeline
+            .apply(
+                &reloaded,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .expect("should apply after serialization");
+
+        assert!(
+            result.log.total_entries > 0,
+            "should have processed operations"
+        );
+    }
+
+    #[test]
+    fn test_phase6c_undo_after_deserialized_apply() {
+        let dir = tempdir().unwrap();
+        let (scope, plan) = create_restart_plan(&dir);
+
+        let source_file = scope.join("documents").join("doc1.pdf");
+        assert!(source_file.exists());
+
+        let json = serde_json::to_string(&plan).expect("should serialize");
+        let reloaded: OperationPlan = serde_json::from_str(&json).expect("should deserialize");
+
+        let fresh_pipeline = Pipeline::new(&scope);
+        let validation = fresh_pipeline.validate(&reloaded);
+        let apply_result = fresh_pipeline
+            .apply(
+                &reloaded,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .expect("should apply");
+
+        let log_json = serde_json::to_string(&apply_result.log).expect("should serialize log");
+        let reloaded_log: OperationLog =
+            serde_json::from_str(&log_json).expect("should deserialize log");
+
+        let undoable = reloaded_log.undoable_entries();
+        if undoable.is_empty() {
+            let preview = fresh_pipeline.preview_undo(&reloaded_log);
+            assert_eq!(preview.total_undo_operations, 0);
+            return;
+        }
+
+        assert!(
+            reloaded_log.id == apply_result.log.id,
+            "log id must survive serialization"
+        );
+
+        let undo_result = fresh_pipeline.undo(&reloaded_log).expect("should undo");
+        assert!(
+            undo_result.total_undo_operations > 0,
+            "should have undoable operations"
+        );
+    }
+
+    fn collect_files(scope: &PathBuf) -> std::collections::HashSet<(String, bool)> {
+        let mut files = std::collections::HashSet::new();
+        let mut dirs = vec![scope.clone()];
+        while let Some(dir) = dirs.pop() {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let is_file = path.is_file();
+                    let rel = path
+                        .strip_prefix(scope)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .to_string();
+                    files.insert((rel, is_file));
+                    if path.is_dir() {
+                        dirs.push(path);
+                    }
+                }
+            }
+        }
+        files
     }
 }

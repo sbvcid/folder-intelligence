@@ -60,7 +60,9 @@ impl std::fmt::Display for IntentParseError {
         match self {
             IntentParseError::ScopeNotSpecified => write!(f, "Scope directory not specified"),
             IntentParseError::AmbiguousPurpose => write!(f, "Intent purpose is ambiguous"),
-            IntentParseError::UnrecognizedIntent => write!(f, "Could not recognize intent from request"),
+            IntentParseError::UnrecognizedIntent => {
+                write!(f, "Could not recognize intent from request")
+            }
         }
     }
 }
@@ -115,10 +117,7 @@ impl TaskIntentParser {
         let unknown_factors = self.identify_unknown_factors(&request_normalized, &goal);
 
         let goal = match goal {
-            DetectedGoal::Organize => Goal::Organize {
-                scope,
-                purpose,
-            },
+            DetectedGoal::Organize => Goal::Organize { scope, purpose },
             DetectedGoal::Reorganize => Goal::Reorganize {
                 scope,
                 strategy: Some(purpose.clone()),
@@ -195,7 +194,9 @@ impl TaskIntentParser {
             || request_lower.contains("久未使用")
         {
             if let Some(days) = Self::extract_archive_days(request_lower) {
-                rules.push(CleanRule::ArchiveOld(Duration::from_secs((days as u64) * 86400)));
+                rules.push(CleanRule::ArchiveOld(Duration::from_secs(
+                    (days as u64) * 86400,
+                )));
             }
         }
 
@@ -253,9 +254,7 @@ impl TaskIntentParser {
             return "work/project".to_string();
         }
 
-        if request_lower.contains("project")
-            || request_lower.contains("專案")
-        {
+        if request_lower.contains("project") || request_lower.contains("專案") {
             return "by_project".to_string();
         }
 
@@ -336,11 +335,7 @@ impl TaskIntentParser {
         hints
     }
 
-    fn identify_unknown_factors(
-        &self,
-        request_lower: &str,
-        goal: &DetectedGoal,
-    ) -> Vec<String> {
+    fn identify_unknown_factors(&self, request_lower: &str, goal: &DetectedGoal) -> Vec<String> {
         let mut unknowns = Vec::new();
 
         if matches!(goal, DetectedGoal::Organize) || matches!(goal, DetectedGoal::Reorganize) {

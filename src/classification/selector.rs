@@ -1,6 +1,6 @@
-use crate::classification::input::{CandidateEvidence, ClassificationConfig, TargetEvidence};
-use crate::classification::comparator::{EvidenceComparator, EvidenceComparison};
 use crate::classification::comparator::ComparisonType;
+use crate::classification::comparator::{EvidenceComparator, EvidenceComparison};
+use crate::classification::input::{CandidateEvidence, ClassificationConfig, TargetEvidence};
 
 const MAX_SCORE: f64 = 1.0;
 
@@ -38,8 +38,7 @@ impl CandidateSelector {
                 match comp.comparison_type {
                     ComparisonType::ExtensionSimilarity => ext_score = comp.score,
                     ComparisonType::StructureSimilarity => struct_score = comp.score,
-                    ComparisonType::IdentifierOverlap
-                    | ComparisonType::IdentifierTypeMatch => {
+                    ComparisonType::IdentifierOverlap | ComparisonType::IdentifierTypeMatch => {
                         id_score = id_score.max(comp.score);
                     }
                     ComparisonType::FileCountSimilarity => count_score = comp.score,

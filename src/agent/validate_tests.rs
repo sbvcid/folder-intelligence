@@ -1,10 +1,10 @@
 use super::*;
 use crate::agent::intent::TaskIntentParser;
-use crate::agent::{EvidenceAnalyzer, RecommendationEngine, PlanGenerator, TaskIntent, Goal, ConstraintSet};
 use crate::agent::plan::WarningType;
-use tempfile::tempdir;
+use crate::agent::{EvidenceAnalyzer, PlanGenerator, RecommendationEngine, TaskIntent};
 use std::fs;
 use std::path::PathBuf;
+use tempfile::tempdir;
 
 fn create_test_scope(dir: &tempfile::TempDir) -> PathBuf {
     let scope = dir.path().join("downloads");
@@ -25,18 +25,23 @@ fn create_test_scope(dir: &tempfile::TempDir) -> PathBuf {
 
 fn run_pipeline(scope: &PathBuf, request: &str) -> (TaskIntent, OperationPlan) {
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse(request)
-        .expect("should parse");
+    let intent = parser.parse(request).expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine;
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let generator = PlanGenerator;
-    let plan = generator.generate(&recommendation, &analysis, &[]).expect("should generate plan");
+    let mut plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
+    plan.validation_context = Some(crate::agent::plan::PlanValidationContext::from(
+        &intent.constraints,
+    ));
 
     (intent, plan)
 }
@@ -46,10 +51,10 @@ fn test_validate_basic_plan() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     assert_eq!(result.plan_id, plan.id);
     assert!(result.summary.total > 0);
@@ -76,12 +81,10 @@ fn test_validate_source_not_found() {
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: PathBuf::from("/tmp/test"),
-        operations: vec![
-            FileSystemOperation::Move {
-                source: PathBuf::from("/nonexistent/file.txt"),
-                dest: PathBuf::from("/tmp/test/dest"),
-            },
-        ],
+        operations: vec![FileSystemOperation::Move {
+            source: PathBuf::from("/nonexistent/file.txt"),
+            dest: PathBuf::from("/tmp/test/dest"),
+        }],
         estimated_impact: crate::agent::EstimatedImpact {
             files_moved: 0,
             dirs_created: 0,
@@ -93,9 +96,10 @@ fn test_validate_source_not_found() {
         has_conflicts: false,
         dry_run: true,
         created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
     };
 
-    let intent = TaskIntent {
+    let _intent = TaskIntent {
         goal: crate::agent::Goal::Organize {
             scope: PathBuf::from("/tmp/test"),
             purpose: "by_category".to_string(),
@@ -106,7 +110,7 @@ fn test_validate_source_not_found() {
     };
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     assert!(result.summary.invalid > 0);
     for v in &result.validated_operations {
@@ -130,12 +134,10 @@ fn test_validate_source_equals_dest() {
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
-        operations: vec![
-            FileSystemOperation::Move {
-                source: same_path.clone(),
-                dest: same_path.clone(),
-            },
-        ],
+        operations: vec![FileSystemOperation::Move {
+            source: same_path.clone(),
+            dest: same_path.clone(),
+        }],
         estimated_impact: crate::agent::EstimatedImpact {
             files_moved: 0,
             dirs_created: 0,
@@ -147,9 +149,10 @@ fn test_validate_source_equals_dest() {
         has_conflicts: false,
         dry_run: true,
         created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
     };
 
-    let intent = TaskIntent {
+    let _intent = TaskIntent {
         goal: crate::agent::Goal::Organize {
             scope: scope.clone(),
             purpose: "by_category".to_string(),
@@ -160,7 +163,7 @@ fn test_validate_source_equals_dest() {
     };
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     let has_invalid = result.validated_operations.iter().any(|v| {
         matches!(v.status, ValidationStatus::Invalid(ref msg) if msg.contains("equals destination"))
@@ -173,10 +176,10 @@ fn test_validate_destination_outside_scope() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
-    let mut bad_plan = plan.clone();
-    if let Some(FileSystemOperation::Move { dest, .. }) = bad_plan.operations.first() {
+    let bad_plan = plan.clone();
+    if let Some(FileSystemOperation::Move { .. }) = bad_plan.operations.first() {
         // We need to use the actual scope for this to work with the validator
     }
 
@@ -185,11 +188,9 @@ fn test_validate_destination_outside_scope() {
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
-        operations: vec![
-            FileSystemOperation::CreateDir {
-                path: PathBuf::from("/outside/scope/dir"),
-            },
-        ],
+        operations: vec![FileSystemOperation::CreateDir {
+            path: PathBuf::from("/outside/scope/dir"),
+        }],
         estimated_impact: crate::agent::EstimatedImpact {
             files_moved: 0,
             dirs_created: 0,
@@ -201,10 +202,11 @@ fn test_validate_destination_outside_scope() {
         has_conflicts: false,
         dry_run: true,
         created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
     };
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&outside_plan, &intent);
+    let result = validator.validate(&outside_plan);
 
     assert!(result.summary.invalid > 0);
     assert!(result.has_invalid);
@@ -215,10 +217,10 @@ fn test_validation_result_serialization() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     let json = serde_json::to_string(&result).expect("should serialize");
     let deserialized: ValidationResult = serde_json::from_str(&json).expect("should deserialize");
@@ -230,10 +232,10 @@ fn test_preview_render() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
     let preview = PlanPreview::default().render(&plan, &result);
 
     assert!(preview.contains("Operation Plan"));
@@ -260,9 +262,10 @@ fn test_preview_empty_plan() {
         has_conflicts: false,
         dry_run: true,
         created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
     };
 
-    let intent = TaskIntent {
+    let _intent = TaskIntent {
         goal: crate::agent::Goal::Organize {
             scope: PathBuf::from("/tmp"),
             purpose: "by_category".to_string(),
@@ -273,7 +276,7 @@ fn test_preview_empty_plan() {
     };
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
     let preview = PlanPreview::default().render(&plan, &result);
 
     assert!(preview.contains("No operations proposed"));
@@ -285,14 +288,14 @@ fn test_filter_executable() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
     let validator = PlanValidator::default();
-    let exec_plan = validator.filter_executable(&plan, &intent);
+    let exec_plan = validator.filter_executable(&plan);
 
     // Executable plan should only have valid/warning operations
     for op in &exec_plan.operations {
-        let validated = validator.validate(&plan, &intent);
+        let _validated = validator.validate(&plan);
         let op_str = format!("{:?}", op);
         let _ = op_str;
     }
@@ -330,6 +333,7 @@ fn test_validate_plan_consistency_duplicate_sources() {
         has_conflicts: false,
         dry_run: true,
         created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
     };
 
     let validator = PlanValidator::default();
@@ -344,7 +348,7 @@ fn test_validate_plan_consistency_no_issues() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
     let validator = PlanValidator::default();
     let issues = validator.validate_plan_consistency(&plan);
@@ -379,6 +383,7 @@ fn test_validate_create_dir_idempotent() {
         has_conflicts: false,
         dry_run: true,
         created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
     };
 
     let validator = PlanValidator::default();
@@ -401,13 +406,18 @@ fn test_validate_with_constraint_preserved() {
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine;
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let generator = PlanGenerator;
-    let plan = generator.generate(&recommendation, &analysis, &[]).expect("should generate plan");
+    let mut plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
+    plan.validation_context = Some(PlanValidationContext::from(&intent.constraints));
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     // Plan should validate successfully with preserved folders
     assert!(result.summary.total > 0);
@@ -415,9 +425,18 @@ fn test_validate_with_constraint_preserved() {
 
 #[test]
 fn test_validate_warning_type_display() {
-    assert_eq!(format!("{}", WarningType::PartialScanScope), "Partial scan scope");
-    assert_eq!(format!("{}", WarningType::FileCountEstimate), "File count estimate");
-    assert_eq!(format!("{}", WarningType::MissingSourceFile), "Missing source file");
+    assert_eq!(
+        format!("{}", WarningType::PartialScanScope),
+        "Partial scan scope"
+    );
+    assert_eq!(
+        format!("{}", WarningType::FileCountEstimate),
+        "File count estimate"
+    );
+    assert_eq!(
+        format!("{}", WarningType::MissingSourceFile),
+        "Missing source file"
+    );
     assert_eq!(format!("{}", WarningType::PathTooDeep), "Path too deep");
 }
 
@@ -463,13 +482,19 @@ fn test_validate_has_warnings_flag() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
-    let (intent, plan) = run_pipeline(&scope, "Organize this folder by category");
+    let (_, plan) = run_pipeline(&scope, "Organize this folder by category");
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     // has_warnings flag should be consistent
-    assert_eq!(result.has_warnings, result.validated_operations.iter().any(|v| v.status.is_warning()));
+    assert_eq!(
+        result.has_warnings,
+        result
+            .validated_operations
+            .iter()
+            .any(|v| v.status.is_warning())
+    );
 }
 
 #[test]
@@ -486,13 +511,18 @@ fn test_full_pipeline_to_validation() {
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine;
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let generator = PlanGenerator;
-    let plan = generator.generate(&recommendation, &analysis, &[]).expect("should generate plan");
+    let mut plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
+    plan.validation_context = Some(PlanValidationContext::from(&intent.constraints));
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     // Full pipeline should produce a validatable plan
     assert_eq!(result.plan_id, plan.id);
@@ -520,13 +550,17 @@ fn test_validate_blocked_by_constraint() {
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine;
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let generator = PlanGenerator;
-    let plan = generator.generate(&recommendation, &analysis, &[]).expect("should generate plan");
+    let plan = generator
+        .generate(&recommendation, &analysis, &[])
+        .expect("should generate plan");
 
     let validator = PlanValidator::default();
-    let result = validator.validate(&plan, &intent);
+    let result = validator.validate(&plan);
 
     // Should not have blocked operations since we didn't propose temp deletion
     // (recommendation engine handles this already)
@@ -539,6 +573,8 @@ trait ValidationResultExt {
 
 impl ValidationResultExt for ValidationResult {
     fn operations_contain_blocked(&self) -> bool {
-        self.validated_operations.iter().any(|v| v.status.is_blocked())
+        self.validated_operations
+            .iter()
+            .any(|v| v.status.is_blocked())
     }
 }

@@ -1,9 +1,9 @@
 use crate::classification::input::{CandidateEvidence, ClassificationConfig, TargetEvidence};
-use crate::classification::selector::CandidateSelector;
 use crate::classification::result::{
     AlternativeCandidate, ClassificationDecision, ClassificationResult, ConfidenceBand,
     SupportingEvidence, UncertaintyReason, Warning,
 };
+use crate::classification::selector::CandidateSelector;
 
 const MIN_SCORE_CREATE_CATEGORY: f64 = 0.3;
 const MIN_SCORE_LEAVE_UNCLASSIFIED: f64 = 0.4;
@@ -45,17 +45,17 @@ impl DecisionEngine {
                 ClassificationDecision::CreateCategory
             };
 
-        let proposed = if matches!(decision, ClassificationDecision::CreateCategory) {
-            Some(target.evidence.name.clone())
-        } else {
-            None
-        };
+            let proposed = if matches!(decision, ClassificationDecision::CreateCategory) {
+                Some(target.evidence.name.clone())
+            } else {
+                None
+            };
 
-        return ClassificationResult {
-            target_path: target.evidence.path.clone(),
-            decision,
-            selected_candidate: None,
-            proposed_category_name: proposed,
+            return ClassificationResult {
+                target_path: target.evidence.path.clone(),
+                decision,
+                selected_candidate: None,
+                proposed_category_name: proposed,
                 confidence: 0.0,
                 confidence_band: ConfidenceBand::Low,
                 candidates_considered: 0,
@@ -164,13 +164,18 @@ impl DecisionEngine {
         if matches!(decision, ClassificationDecision::LeaveUnclassified) {
             for other in penalized_scores.iter().skip(1) {
                 if other.composite_score >= MIN_SCORE_CREATE_CATEGORY
-                    && !alternatives.iter().any(|a| a.candidate_path == other.candidate_path)
+                    && !alternatives
+                        .iter()
+                        .any(|a| a.candidate_path == other.candidate_path)
                 {
                     alternatives.push(AlternativeCandidate {
                         candidate_name: other.candidate_name.clone(),
                         candidate_path: other.candidate_path.clone(),
                         score: other.composite_score,
-                        rejection_reason: format!("Score {:.2} below leave threshold of {}", other.composite_score, MIN_SCORE_LEAVE_UNCLASSIFIED),
+                        rejection_reason: format!(
+                            "Score {:.2} below leave threshold of {}",
+                            other.composite_score, MIN_SCORE_LEAVE_UNCLASSIFIED
+                        ),
                     });
                 }
             }

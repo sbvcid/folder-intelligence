@@ -1,4 +1,4 @@
-use folder_intelligence::{Scanner, ScanLimits, DirectoryEvidence, ErrorCategory, IdentifierType};
+use folder_intelligence::{DirectoryEvidence, ErrorCategory, IdentifierType, ScanLimits, Scanner};
 use std::fs;
 use tempfile::tempdir;
 
@@ -7,7 +7,7 @@ fn create_fixture_basic(dir: &std::path::Path) {
     fs::write(dir.join("file2.txt"), "content2").unwrap();
     fs::write(dir.join("image.png"), "fake png").unwrap();
     fs::write(dir.join("document.pdf"), "fake pdf").unwrap();
-    
+
     let subdir = dir.join("subdir");
     fs::create_dir(&subdir).unwrap();
     fs::write(subdir.join("subfile.txt"), "subcontent").unwrap();
@@ -15,9 +15,21 @@ fn create_fixture_basic(dir: &std::path::Path) {
 
 fn create_fixture_with_identifiers(dir: &std::path::Path) {
     fs::write(dir.join("book_978-0-306-40615-7_v1.2.3.pdf"), "book").unwrap();
-    fs::write(dir.join("paper_10.1038_nature12373_2024-01-15.pdf"), "paper").unwrap();
-    fs::write(dir.join("app_550e8400-e29b-41d4-a716-446655440000.exe"), "app").unwrap();
-    fs::write(dir.join("data_d41d8cd98f00b204e9800998ecf8427e.bin"), "data").unwrap();
+    fs::write(
+        dir.join("paper_10.1038_nature12373_2024-01-15.pdf"),
+        "paper",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("app_550e8400-e29b-41d4-a716-446655440000.exe"),
+        "app",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("data_d41d8cd98f00b204e9800998ecf8427e.bin"),
+        "data",
+    )
+    .unwrap();
     fs::write(dir.join("SKU-ABC123_product.jpg"), "image").unwrap();
 }
 
@@ -32,19 +44,19 @@ fn create_fixture_text_files(dir: &std::path::Path) {
 
 fn create_fixture_nested(dir: &std::path::Path) {
     fs::write(dir.join("root.txt"), "root").unwrap();
-    
+
     let level1a = dir.join("level1a");
     fs::create_dir(&level1a).unwrap();
     fs::write(level1a.join("file1a.txt"), "1a").unwrap();
-    
+
     let level1b = dir.join("level1b");
     fs::create_dir(&level1b).unwrap();
     fs::write(level1b.join("file1b.txt"), "1b").unwrap();
-    
+
     let level2 = level1a.join("level2");
     fs::create_dir(&level2).unwrap();
     fs::write(level2.join("file2.txt"), "2").unwrap();
-    
+
     let level3 = level2.join("level3");
     fs::create_dir(&level3).unwrap();
     fs::write(level3.join("file3.txt"), "3").unwrap();
@@ -54,22 +66,30 @@ fn create_fixture_nested(dir: &std::path::Path) {
 fn test_fixture_basic() {
     let dir = tempdir().unwrap();
     create_fixture_basic(dir.path());
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     assert_eq!(result.evidence.len(), 2);
-    
-    let root_evidence = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+
+    let root_evidence = result
+        .evidence
+        .iter()
+        .find(|e| e.parent_path.is_none())
+        .unwrap();
     assert_eq!(root_evidence.file_count, 4);
     assert_eq!(root_evidence.directory_count, 1);
-    assert_eq!(root_evidence.child_directory_names, vec!["subdir".to_string()]);
-    
-    let ext_hist: std::collections::HashMap<&String, &u64> = root_evidence.extension_histogram.iter().collect();
+    assert_eq!(
+        root_evidence.child_directory_names,
+        vec!["subdir".to_string()]
+    );
+
+    let ext_hist: std::collections::HashMap<&String, &u64> =
+        root_evidence.extension_histogram.iter().collect();
     assert!(ext_hist.get(&"txt".to_string()).is_some_and(|v| **v == 2));
     assert!(ext_hist.get(&"png".to_string()).is_some_and(|v| **v == 1));
     assert!(ext_hist.get(&"pdf".to_string()).is_some_and(|v| **v == 1));
-    
+
     let sub_evidence = result.evidence.iter().find(|e| e.name == "subdir").unwrap();
     assert_eq!(sub_evidence.file_count, 1);
     assert_eq!(sub_evidence.directory_count, 0);
@@ -79,13 +99,17 @@ fn test_fixture_basic() {
 fn test_fixture_identifiers() {
     let dir = tempdir().unwrap();
     create_fixture_with_identifiers(dir.path());
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     let evidence = &result.evidence[0];
-    
-    let id_types: Vec<_> = evidence.syntactic_identifiers.iter().map(|i| &i.identifier_type).collect();
+
+    let id_types: Vec<_> = evidence
+        .syntactic_identifiers
+        .iter()
+        .map(|i| &i.identifier_type)
+        .collect();
     assert!(id_types.contains(&&IdentifierType::Isbn));
     assert!(id_types.contains(&&IdentifierType::Semver));
     assert!(id_types.contains(&&IdentifierType::Doi));
@@ -99,10 +123,10 @@ fn test_fixture_identifiers() {
 fn test_fixture_text_files() {
     let dir = tempdir().unwrap();
     create_fixture_text_files(dir.path());
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     let evidence = &result.evidence[0];
     assert!(evidence.text_file_presence.has_readme);
     assert!(evidence.text_file_presence.has_license);
@@ -116,30 +140,40 @@ fn test_fixture_text_files() {
 fn test_fixture_nested() {
     let dir = tempdir().unwrap();
     create_fixture_nested(dir.path());
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     assert_eq!(result.evidence.len(), 5);
-    
-    let root = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+
+    let root = result
+        .evidence
+        .iter()
+        .find(|e| e.parent_path.is_none())
+        .unwrap();
     assert_eq!(root.directory_count, 2);
     assert!(root.child_directory_names.contains(&"level1a".to_string()));
     assert!(root.child_directory_names.contains(&"level1b".to_string()));
     assert_eq!(root.depth, 0);
-    
-    let level1a = result.evidence.iter().find(|e| e.name == "level1a").unwrap();
+
+    let level1a = result
+        .evidence
+        .iter()
+        .find(|e| e.name == "level1a")
+        .unwrap();
     assert_eq!(level1a.parent_path, Some(dir.path().to_path_buf()));
     assert_eq!(level1a.directory_count, 1);
-    assert!(level1a.child_directory_names.contains(&"level2".to_string()));
+    assert!(level1a
+        .child_directory_names
+        .contains(&"level2".to_string()));
     assert_eq!(level1a.depth, 1);
-    
+
     let level2 = result.evidence.iter().find(|e| e.name == "level2").unwrap();
     assert_eq!(level2.parent_path, Some(level1a.path.clone()));
     assert_eq!(level2.directory_count, 1);
     assert!(level2.child_directory_names.contains(&"level3".to_string()));
     assert_eq!(level2.depth, 2);
-    
+
     let level3 = result.evidence.iter().find(|e| e.name == "level3").unwrap();
     assert_eq!(level3.parent_path, Some(level2.path.clone()));
     assert_eq!(level3.directory_count, 0);
@@ -151,12 +185,12 @@ fn test_fixture_empty_folder() {
     let dir = tempdir().unwrap();
     let empty = dir.path().join("empty");
     fs::create_dir(&empty).unwrap();
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     assert_eq!(result.evidence.len(), 2);
-    
+
     let empty_evidence = result.evidence.iter().find(|e| e.name == "empty").unwrap();
     assert_eq!(empty_evidence.file_count, 0);
     assert_eq!(empty_evidence.directory_count, 0);
@@ -174,15 +208,20 @@ fn test_fixture_unicode() {
     fs::create_dir(&unicode_dir).unwrap();
     fs::write(unicode_dir.join("文件_файл.txt"), "内容").unwrap();
     fs::write(unicode_dir.join("image_изображение.png"), "png").unwrap();
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     assert_eq!(result.evidence.len(), 2);
-    
-    let unicode_evidence = result.evidence.iter().find(|e| e.name == "测试目录_тест").unwrap();
+
+    let unicode_evidence = result
+        .evidence
+        .iter()
+        .find(|e| e.name == "测试目录_тест")
+        .unwrap();
     assert_eq!(unicode_evidence.file_count, 2);
-    let ext_hist: std::collections::HashMap<&String, &u64> = unicode_evidence.extension_histogram.iter().collect();
+    let ext_hist: std::collections::HashMap<&String, &u64> =
+        unicode_evidence.extension_histogram.iter().collect();
     assert!(ext_hist.get(&"txt".to_string()).is_some_and(|v| **v == 1));
     assert!(ext_hist.get(&"png".to_string()).is_some_and(|v| **v == 1));
 }
@@ -191,17 +230,17 @@ fn test_fixture_unicode() {
 fn test_json_output_valid() {
     let dir = tempdir().unwrap();
     create_fixture_basic(dir.path());
-    
+
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     let mut output = Vec::new();
     for evidence in &result.evidence {
         let line = serde_json::to_string(evidence).unwrap();
         output.extend_from_slice(line.as_bytes());
         output.push(b'\n');
     }
-    
+
     let output_str = String::from_utf8(output).unwrap();
     for line in output_str.lines() {
         let parsed: DirectoryEvidence = serde_json::from_str(line).unwrap();
@@ -212,21 +251,21 @@ fn test_json_output_valid() {
 #[test]
 fn test_scan_limits_respected() {
     let dir = tempdir().unwrap();
-    
+
     for i in 0..1000 {
         fs::write(dir.path().join(format!("file{}.txt", i)), "content").unwrap();
     }
-    
+
     let limits = ScanLimits {
         max_files_per_dir: 100,
         max_total_files: 500,
         max_total_dirs: 10,
         ..Default::default()
     };
-    
+
     let scanner = Scanner::with_limits(dir.path(), limits);
     let result = scanner.scan().unwrap();
-    
+
     assert!(result.metadata.stats.files_encountered <= 500);
     assert!(result.metadata.stats.directories_scanned <= 10);
 }
@@ -237,15 +276,15 @@ fn test_representative_filenames_limit() {
     for i in 0..50 {
         fs::write(dir.path().join(format!("file{:03}.txt", i)), "content").unwrap();
     }
-    
+
     let limits = ScanLimits {
         max_representative_files: 5,
         ..Default::default()
     };
-    
+
     let scanner = Scanner::with_limits(dir.path(), limits);
     let result = scanner.scan().unwrap();
-    
+
     let evidence = &result.evidence[0];
     assert_eq!(evidence.filename_sample.len(), 5);
 }
@@ -312,8 +351,13 @@ fn test_max_total_dirs_enforced() {
     let scanner = Scanner::with_limits(dir.path(), limits);
     let result = scanner.scan().unwrap();
 
-        assert!(result.metadata.stats.directories_scanned <= 10);
-    assert!(result.metadata.stats.errors.iter().any(|e| e.category == ErrorCategory::LimitExceeded));
+    assert!(result.metadata.stats.directories_scanned <= 10);
+    assert!(result
+        .metadata
+        .stats
+        .errors
+        .iter()
+        .any(|e| e.category == ErrorCategory::LimitExceeded));
 }
 
 #[test]
@@ -372,7 +416,10 @@ fn test_inspect_single_efficient() {
     let result = scanner.inspect_single().unwrap();
 
     assert_eq!(result.evidence.len(), 1);
-    assert_eq!(result.evidence[0].name, dir.path().file_name().unwrap().to_str().unwrap());
+    assert_eq!(
+        result.evidence[0].name,
+        dir.path().file_name().unwrap().to_str().unwrap()
+    );
 }
 
 #[test]
@@ -399,7 +446,7 @@ fn test_symlink_not_followed() {
 
     let scanner = Scanner::new(dir.path());
     let result = scanner.scan().unwrap();
-    
+
     #[cfg(unix)]
     {
         let root_evidence = &result.evidence[0];
@@ -426,7 +473,9 @@ fn test_special_characters_in_filenames() {
 
     let evidence = &result.evidence[0];
     assert_eq!(evidence.file_count, 4);
-    assert!(evidence.filename_sample.contains(&"file with spaces.txt".to_string()));
+    assert!(evidence
+        .filename_sample
+        .contains(&"file with spaces.txt".to_string()));
 }
 
 #[test]
@@ -464,7 +513,7 @@ fn test_timeout_limit_reached() {
 fn test_deeply_nested_directory_max_depth() {
     let dir = tempdir().unwrap();
     let mut current = dir.path().to_path_buf();
-    
+
     for i in 0..5 {
         current = current.join(format!("level{}", i));
         fs::create_dir(&current).unwrap();
@@ -479,7 +528,7 @@ fn test_deeply_nested_directory_max_depth() {
     let result = scanner.scan().unwrap();
 
     assert_eq!(result.evidence.len(), 2);
-    
+
     let level0 = result.evidence.iter().find(|e| e.name == "level0").unwrap();
     assert_eq!(level0.file_count, 1);
     let level1_exists = result.evidence.iter().any(|e| e.name == "level1");
@@ -594,7 +643,9 @@ fn test_max_files_per_dir_limits_files_not_dirs() {
     let evidence = &result.evidence[0];
     assert_eq!(evidence.file_count, 5);
     assert_eq!(evidence.directory_count, 1);
-    assert!(evidence.child_directory_names.contains(&"subdir".to_string()));
+    assert!(evidence
+        .child_directory_names
+        .contains(&"subdir".to_string()));
     assert_eq!(result.evidence.len(), 2);
 }
 
@@ -657,7 +708,10 @@ fn test_fixture_identifiers_directory() {
 
     let evidence = &result.evidence[0];
     assert!(evidence.identifier_summary.total >= 2);
-    assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Isbn));
+    assert!(evidence
+        .identifier_summary
+        .by_type
+        .contains_key(&IdentifierType::Isbn));
 }
 
 #[test]
@@ -692,4 +746,3 @@ fn test_fixture_empty_directory() {
     assert_eq!(evidence.file_count, 0);
     assert_eq!(evidence.directory_count, 0);
 }
-

@@ -1,43 +1,37 @@
+pub mod agent;
+pub mod classification;
 pub mod cli;
 pub mod evidence;
 pub mod scanner;
-pub mod classification;
-pub mod agent;
 
+pub use agent::{
+    Ambiguity, AmbiguityReason, AnalyzerError, Anomaly, AnomalyType, ApplyError, ApplyOptions,
+    ApplyResult, CandidateCategory, ClarificationEngine, ClarificationError, ClarificationQuestion,
+    ClarifiedIntent, CleanRule, ConstraintCheck, ConstraintSet, ConstraintViolation, ContentGroup,
+    ContentType, DecisionAnswer, DecisionCategory, EstimatedImpact, EvidenceAnalyzer, EvidenceGap,
+    ExecutionStatus, Executor, FileSystemOperation, GapType, Goal, IntentParseError, LogEntry,
+    OperationLog, OperationPlan, Pipeline, PipelineError, PipelineOptions, PipelineResult,
+    PlanError, PlanGenerator, PlanPreview, PlanValidationContext, PlanValidator, ProposedCategory,
+    ProposedOperation, Recommendation, RecommendationEngine, RecommendationError,
+    RecommendationStrategy, RecommendationWarning, StructureSummary, TaskAnalysis, TaskIntent,
+    TaskIntentParser, UndoConflict, UndoLogEntry, UndoResult, UserDecision, ValidatedOperation,
+    ValidationResult, ValidationStatus, ValidationSummary, ValidationWarning, WarningType,
+};
+pub use classification::{
+    build_request, validate_ai_result, AiClassificationConstraints, AiClassificationError,
+    AiClassificationRequest, AiClassifier, AlternativeCandidate, CandidateEvidence, CandidateScore,
+    CandidateSelector, CandidateSummary, ClassificationConfig, ClassificationDecision,
+    ClassificationInput, ClassificationProcessor, ClassificationResult, ComparisonType,
+    ConfidenceBand, DecisionEngine, EvidenceComparator, EvidenceComparison, MockAiClassifier,
+    RealAiClassifier, RuleBasedProcessor, SupportingEvidence, TargetEvidence, UncertaintyReason,
+    UserHints, Warning, MAX_CANDIDATES, SAMPLE_CHILD_DIRS,
+};
 pub use evidence::{
     DirectoryEvidence, DominantExtension, ErrorCategory, IdentifierSummary, IdentifierType,
     ScanError, ScanLimits, ScanMetadata, ScanResult, ScanStats, SyntacticIdentifier,
     TextFilePresence, SCHEMA_VERSION,
 };
 pub use scanner::Scanner;
-pub use classification::{
-    TargetEvidence, CandidateEvidence, CandidateSummary, ClassificationConfig, UserHints,
-    ClassificationInput, EvidenceComparator, EvidenceComparison, ComparisonType,
-    CandidateSelector, CandidateScore, DecisionEngine, ClassificationProcessor,
-    RuleBasedProcessor, ClassificationResult, ClassificationDecision, ConfidenceBand,
-    SupportingEvidence, AlternativeCandidate, UncertaintyReason, Warning,
-    AiClassifier, AiClassificationConstraints, AiClassificationError, AiClassificationRequest,
-    build_request, validate_ai_result, RealAiClassifier, MockAiClassifier,
-    SAMPLE_CHILD_DIRS, MAX_CANDIDATES,
-};
-pub use agent::{
-    TaskIntent, Goal, ConstraintSet, CleanRule, TaskIntentParser, IntentParseError,
-    TaskAnalysis, EvidenceAnalyzer, StructureSummary, ContentGroup, ContentType,
-    Anomaly, AnomalyType, Ambiguity, AmbiguityReason, EvidenceGap, GapType,
-    CandidateCategory, AnalyzerError,
-    Recommendation, RecommendationStrategy, ProposedCategory, ProposedOperation,
-    ConstraintCheck, ConstraintViolation, ClarificationQuestion, RecommendationWarning,
-    RecommendationEngine, RecommendationError,
-    DecisionCategory, DecisionAnswer, UserDecision, ClarifiedIntent,
-    ClarificationEngine, ClarificationError,
-    FileSystemOperation, OperationPlan, EstimatedImpact,
-    ValidationWarning, WarningType, PlanGenerator, PlanError,
-    ValidationStatus, ValidatedOperation, ValidationSummary, ValidationResult,
-    PlanValidator, PlanPreview,
-    Executor, ExecutionStatus, UndoConflict, LogEntry, OperationLog,
-    UndoLogEntry, UndoResult, ApplyError, ApplyResult,
-    Pipeline, PipelineOptions, ApplyOptions, PipelineResult, PipelineError,
-};
 
 #[cfg(feature = "network")]
 pub use classification::{OpenAiProvider, OpenAiProviderConfig};

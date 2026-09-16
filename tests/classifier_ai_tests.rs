@@ -84,7 +84,9 @@ fn make_test_candidate(name: &str, path: &PathBuf) -> CandidateEvidence {
     }
 }
 
-fn build_input_and_baseline(candidates: Vec<CandidateEvidence>) -> (ClassificationInput, ClassificationResult) {
+fn build_input_and_baseline(
+    candidates: Vec<CandidateEvidence>,
+) -> (ClassificationInput, ClassificationResult) {
     let target = make_test_target();
     let metadata = ScanMetadata {
         _type: "scan_metadata".to_string(),
@@ -153,7 +155,10 @@ fn test_mock_ai_no_candidates_create_category() {
     let classifier = MockAiClassifier::default();
     let result = classifier.classify(&input, &baseline).unwrap();
 
-    assert!(matches!(result.decision, ClassificationDecision::CreateCategory | ClassificationDecision::LeaveUnclassified));
+    assert!(matches!(
+        result.decision,
+        ClassificationDecision::CreateCategory | ClassificationDecision::LeaveUnclassified
+    ));
 }
 
 #[test]
@@ -179,7 +184,10 @@ fn test_mock_ai_deterministic() {
 
     assert_eq!(result1.decision, result2.decision);
     assert_eq!(result1.confidence, result2.confidence);
-    assert_eq!(result1.supporting_evidence.len(), result2.supporting_evidence.len());
+    assert_eq!(
+        result1.supporting_evidence.len(),
+        result2.supporting_evidence.len()
+    );
 }
 
 #[test]
@@ -238,13 +246,20 @@ fn test_mock_ai_low_confidence_leave_unclassified() {
     let baseline = DecisionEngine::classify(&target_input, &input.candidates, &config);
 
     // Low score because extensions don't match
-    assert!(baseline.confidence < 0.4, "Expected low confidence, got {}", baseline.confidence);
+    assert!(
+        baseline.confidence < 0.4,
+        "Expected low confidence, got {}",
+        baseline.confidence
+    );
 
     let classifier = MockAiClassifier::default();
     let result = classifier.classify(&input, &baseline).unwrap();
 
     // With low confidence, mock AI should not move
-    assert!(!matches!(result.decision, ClassificationDecision::MoveExisting));
+    assert!(!matches!(
+        result.decision,
+        ClassificationDecision::MoveExisting
+    ));
 }
 
 #[test]

@@ -1,6 +1,6 @@
-use crate::agent::{Goal, CleanRule, ConstraintSet};
-use crate::agent::intent::TaskIntentParser;
 use crate::agent::intent::IntentParseError;
+use crate::agent::intent::TaskIntentParser;
+use crate::agent::{CleanRule, ConstraintSet, Goal};
 use std::path::PathBuf;
 
 #[test]
@@ -71,9 +71,7 @@ fn test_reorganize_detect() {
 #[test]
 fn test_reorganize_chinese() {
     let parser = TaskIntentParser::default();
-    let intent = parser
-        .parse("重新整理這個資料夾")
-        .expect("should parse");
+    let intent = parser.parse("重新整理這個資料夾").expect("should parse");
 
     assert!(matches!(intent.goal, Goal::Reorganize { .. }));
 }
@@ -163,22 +161,14 @@ fn test_hints_dry_run() {
         .parse("Organize Downloads with dry run preview verbose")
         .expect("should parse");
 
-    assert_eq!(
-        intent.user_hints.get("dry_run"),
-        Some(&"true".to_string())
-    );
-    assert_eq!(
-        intent.user_hints.get("verbose"),
-        Some(&"true".to_string())
-    );
+    assert_eq!(intent.user_hints.get("dry_run"), Some(&"true".to_string()));
+    assert_eq!(intent.user_hints.get("verbose"), Some(&"true".to_string()));
 }
 
 #[test]
 fn test_max_questions_default() {
     let parser = TaskIntentParser::default();
-    let intent = parser
-        .parse("Organize Downloads")
-        .expect("should parse");
+    let intent = parser.parse("Organize Downloads").expect("should parse");
 
     assert_eq!(intent.constraints.max_interactive_questions, 10);
 }
@@ -196,9 +186,7 @@ fn test_unknown_factors_absent_for_clean() {
 #[test]
 fn test_custom_default_scope() {
     let parser = TaskIntentParser::new(PathBuf::from("/tmp/test_scope"));
-    let intent = parser
-        .parse("Help me organize")
-        .expect("should parse");
+    let intent = parser.parse("Help me organize").expect("should parse");
 
     match &intent.goal {
         Goal::Organize { scope, .. } => {
@@ -211,12 +199,11 @@ fn test_custom_default_scope() {
 #[test]
 fn test_intent_serialization() {
     let parser = TaskIntentParser::default();
-    let intent = parser
-        .parse("Organize by category")
-        .expect("should parse");
+    let intent = parser.parse("Organize by category").expect("should parse");
 
     let json = serde_json::to_string(&intent).expect("should serialize");
-    let deserialized: crate::agent::TaskIntent = serde_json::from_str(&json).expect("should deserialize");
+    let deserialized: crate::agent::TaskIntent =
+        serde_json::from_str(&json).expect("should deserialize");
     assert_eq!(intent, deserialized);
 }
 

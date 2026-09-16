@@ -1,8 +1,7 @@
-use crate::agent::intent::TaskIntent;
-use crate::agent::plan::{FileSystemOperation, OperationPlan};
+use crate::agent::plan::{FileSystemOperation, OperationPlan, PlanValidationContext};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -110,14 +109,17 @@ impl Default for PlanValidator {
 }
 
 impl PlanValidator {
-    pub fn validate(
-        &self,
-        plan: &OperationPlan,
-        intent: &TaskIntent,
-    ) -> ValidationResult {
+    pub fn validate(&self, plan: &OperationPlan) -> ValidationResult {
         let mut validated = Vec::new();
         let mut summary = ValidationSummary::new();
         let scope = &plan.scope;
+
+        let context = match &plan.validation_context {
+            Some(ctx) => ctx.clone(),
+            None => {
+                return self.validation_missing_context(&plan.id, scope, &plan.operations);
+            }
+        };
 
         let mut source_map: HashMap<PathBuf, usize> = HashMap::new();
         let mut dest_map: HashMap<PathBuf, Vec<usize>> = HashMap::new();
@@ -132,22 +134,26 @@ impl PlanValidator {
                 FileSystemOperation::Move { source, dest } => {
                     if !source.exists() {
                         status = ValidationStatus::Invalid(format!(
-                            "Source not found: {}", source.display()
+                            "Source not found: {}",
+                            source.display()
                         ));
                         summary.invalid += 1;
                     } else if source == dest {
                         status = ValidationStatus::Invalid(format!(
-                            "Source equals destination: {}", source.display()
+                            "Source equals destination: {}",
+                            source.display()
                         ));
                         summary.invalid += 1;
                     } else if !Self::is_within_scope(dest, scope) {
                         status = ValidationStatus::Invalid(format!(
-                            "Destination outside scope: {}", dest.display()
+                            "Destination outside scope: {}",
+                            dest.display()
                         ));
                         summary.invalid += 1;
                     } else if dest.is_file() || dest.is_symlink() {
                         status = ValidationStatus::Conflict(format!(
-                            "Destination file exists: {}", dest.display()
+                            "Destination file exists: {}",
+                            dest.display()
                         ));
                         summary.conflicts += 1;
                     } else if dest.is_dir() && source.is_file() {
@@ -162,7 +168,8 @@ impl PlanValidator {
                     if let Some(existing_idx) = source_map.get(source) {
                         let conflicting = format!(
                             "Duplicate source: {} (also moved in operation #{})",
-                            source.display(), existing_idx
+                            source.display(),
+                            existing_idx
                         );
                         status = ValidationStatus::Conflict(conflicting);
                         summary.conflicts += 1;
@@ -170,7 +177,10 @@ impl PlanValidator {
                         source_map.insert(source.clone(), validated.len());
                     }
 
-                    dest_map.entry(dest.clone()).or_default().push(validated.len());
+                    dest_map
+                        .entry(dest.clone())
+                        .or_default()
+                        .push(validated.len());
 
                     if source.is_dir() && !Self::check_path_depth(source) {
                         warnings.push(format!("Source path is very deep: {}", source.display()));
@@ -179,12 +189,14 @@ impl PlanValidator {
                 FileSystemOperation::CreateDir { path } => {
                     if path.exists() {
                         status = ValidationStatus::Warning(format!(
-                            "Directory already exists: {}", path.display()
+                            "Directory already exists: {}",
+                            path.display()
                         ));
                         summary.warnings += 1;
                     } else if !Self::is_within_scope(path, scope) {
                         status = ValidationStatus::Invalid(format!(
-                            "CreateDir path outside scope: {}", path.display()
+                            "CreateDir path outside scope: {}",
+                            path.display()
                         ));
                         summary.invalid += 1;
                     } else {
@@ -194,12 +206,14 @@ impl PlanValidator {
                 FileSystemOperation::Delete { path, .. } => {
                     if !path.exists() {
                         status = ValidationStatus::Invalid(format!(
-                            "Delete target not found: {}", path.display()
+                            "Delete target not found: {}",
+                            path.display()
                         ));
                         summary.invalid += 1;
                     } else if !Self::is_within_scope(path, scope) {
                         status = ValidationStatus::Invalid(format!(
-                            "Delete target outside scope: {}", path.display()
+                            "Delete target outside scope: {}",
+                            path.display()
                         ));
                         summary.invalid += 1;
                     }
@@ -211,7 +225,7 @@ impl PlanValidator {
                 summary.warnings += 1;
             }
 
-            let blocked_reason = Self::check_constraint_blocked(op, intent);
+            let blocked_reason = Self::check_constraint_blocked(op, &context);
             if let Some(reason) = blocked_reason {
                 status = ValidationStatus::BlockedByConstraint(reason);
                 summary.blocked += 1;
@@ -253,29 +267,30 @@ impl PlanValidator {
 
     fn check_constraint_blocked(
         op: &FileSystemOperation,
-        intent: &TaskIntent,
+        context: &PlanValidationContext,
     ) -> Option<String> {
         match op {
             FileSystemOperation::Delete { path, .. } => {
                 let path_str = path.to_string_lossy().to_lowercase();
-                if path_str.contains("temp") && !intent.constraints.auto_delete_temps {
+                if path_str.contains("temp") && !context.auto_delete_temps {
                     return Some("auto_delete_temps is false".to_string());
                 }
-                if path_str.contains("tmp") && !intent.constraints.auto_delete_temps {
+                if path_str.contains("tmp") && !context.auto_delete_temps {
                     return Some("auto_delete_temps is false".to_string());
                 }
-                if intent.constraints.preserve_existing_folders {
+                if context.preserve_existing_folders {
                     return Some("preserve_existing_folders is true".to_string());
                 }
                 None
             }
             FileSystemOperation::Move { dest, .. } => {
-                if !intent.constraints.preserve_existing_folders {
+                if !context.preserve_existing_folders {
                     // Not a constraint violation, just a note
                 }
                 let dest_ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if (dest_ext == "tmp" || dest_ext == "temp" || dest_ext == "crdownload")
-                    && !intent.constraints.auto_delete_temps {
+                    && !context.auto_delete_temps
+                {
                     return Some("auto_delete_temps is false".to_string());
                 }
                 None
@@ -302,14 +317,15 @@ impl PlanValidator {
             }
         }
 
-        let dest_counts: HashMap<&PathBuf, usize> = destinations.iter().fold(HashMap::new(), |mut map, d| {
-            *map.entry(*d).or_insert(0) += 1;
-            map
-        });
+        let dest_counts: HashMap<&PathBuf, usize> =
+            destinations.iter().fold(HashMap::new(), |mut map, d| {
+                *map.entry(*d).or_insert(0) += 1;
+                map
+            });
 
-        destinations.iter().any(|d| {
-            dest_counts.get(d).map(|c| *c > 1).unwrap_or(false)
-        })
+        destinations
+            .iter()
+            .any(|d| dest_counts.get(d).map(|c| *c > 1).unwrap_or(false))
     }
 
     fn is_within_scope(path: &Path, scope: &Path) -> bool {
@@ -331,11 +347,47 @@ impl PlanValidator {
         path.components().count() <= 10
     }
 
-    #[allow(dead_code)]
-    pub fn validate_plan_consistency(
+    fn validation_missing_context(
         &self,
-        plan: &OperationPlan,
-    ) -> Vec<String> {
+        plan_id: &str,
+        scope: &Path,
+        operations: &[FileSystemOperation],
+    ) -> ValidationResult {
+        let mut validated = Vec::new();
+        let mut summary = ValidationSummary::new();
+
+        for op in operations {
+            let status = ValidationStatus::Invalid(
+                "Validation context missing: plan was created without persisted constraints. \
+                 Cannot safely determine constraint-based validation."
+                    .to_string(),
+            );
+            summary.invalid += 1;
+            validated.push(ValidatedOperation {
+                operation: op.clone(),
+                status,
+                warnings: Vec::new(),
+                dependencies: Vec::new(),
+            });
+        }
+
+        let executable_operations = 0;
+
+        ValidationResult {
+            plan_id: plan_id.to_string(),
+            scope: scope.to_path_buf(),
+            validated_operations: validated,
+            summary,
+            has_blocked: false,
+            has_conflicts: false,
+            has_invalid: true,
+            has_warnings: false,
+            executable_operations,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn validate_plan_consistency(&self, plan: &OperationPlan) -> Vec<String> {
         let mut issues = Vec::new();
 
         let mut sources: HashSet<&PathBuf> = HashSet::new();
@@ -367,7 +419,8 @@ impl PlanValidator {
             if sources.len() > 1 {
                 issues.push(format!(
                     "Destination {} is target of {} move operations (potential collision)",
-                    dest.display(), sources.len()
+                    dest.display(),
+                    sources.len()
                 ));
             }
         }
@@ -376,12 +429,8 @@ impl PlanValidator {
     }
 
     #[allow(dead_code)]
-    pub fn filter_executable(
-        &self,
-        plan: &OperationPlan,
-        intent: &TaskIntent,
-    ) -> OperationPlan {
-        let result = self.validate(plan, intent);
+    pub fn filter_executable(&self, plan: &OperationPlan) -> OperationPlan {
+        let result = self.validate(plan);
 
         let executable: Vec<FileSystemOperation> = result
             .validated_operations
@@ -394,7 +443,6 @@ impl PlanValidator {
         new_plan.operations = executable;
         new_plan.id = format!("plan-exec-{}", plan.created_at);
         new_plan
-
     }
 }
 
@@ -407,19 +455,19 @@ impl Default for PlanPreview {
 }
 
 impl PlanPreview {
-    pub fn render(
-        &self,
-        plan: &OperationPlan,
-        validation: &ValidationResult,
-    ) -> String {
+    pub fn render(&self, plan: &OperationPlan, validation: &ValidationResult) -> String {
         let mut output = String::new();
 
         output.push_str(&format!("Operation Plan: {}\n", plan.id));
         output.push_str(&format!("Scope: {}\n", plan.scope.display()));
-        output.push_str(&format!("Dry run: {}\n", if plan.dry_run { "Yes" } else { "No" }));
-        output.push_str(&format!("Status: {} total, {} executable\n",
-            validation.summary.total,
-            validation.executable_operations));
+        output.push_str(&format!(
+            "Dry run: {}\n",
+            if plan.dry_run { "Yes" } else { "No" }
+        ));
+        output.push_str(&format!(
+            "Status: {} total, {} executable\n",
+            validation.summary.total, validation.executable_operations
+        ));
         output.push('\n');
 
         output.push_str("=== Validation Summary ===\n");
@@ -444,7 +492,12 @@ impl PlanPreview {
                 ValidationStatus::Invalid(_) => "  ✗",
                 ValidationStatus::Warning(_) => "  ⚠",
             };
-            output.push_str(&format!("{} [{}] {}\n", status_tag, validated.status, validated.operation.description()));
+            output.push_str(&format!(
+                "{} [{}] {}\n",
+                status_tag,
+                validated.status,
+                validated.operation.description()
+            ));
             for dep in &validated.dependencies {
                 output.push_str(&format!("    depends on operation #{}\n", dep));
             }
@@ -452,10 +505,22 @@ impl PlanPreview {
 
         output.push('\n');
         output.push_str("=== Estimated Impact ===\n");
-        output.push_str(&format!("  Files moved:  {}\n", plan.estimated_impact.files_moved));
-        output.push_str(&format!("  Dirs created: {}\n", plan.estimated_impact.dirs_created));
-        output.push_str(&format!("  Dirs affected: {}\n", plan.estimated_impact.dirs_affected));
-        output.push_str(&format!("  Total bytes:  {}\n", plan.estimated_impact.total_bytes));
+        output.push_str(&format!(
+            "  Files moved:  {}\n",
+            plan.estimated_impact.files_moved
+        ));
+        output.push_str(&format!(
+            "  Dirs created: {}\n",
+            plan.estimated_impact.dirs_created
+        ));
+        output.push_str(&format!(
+            "  Dirs affected: {}\n",
+            plan.estimated_impact.dirs_affected
+        ));
+        output.push_str(&format!(
+            "  Total bytes:  {}\n",
+            plan.estimated_impact.total_bytes
+        ));
 
         if plan.has_conflicts {
             output.push_str("\n⚠️  Plan has detected conflicts\n");

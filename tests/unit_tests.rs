@@ -221,10 +221,17 @@ mod scanner_tests {
 
         assert_eq!(result.evidence.len(), 2);
 
-        let root_evidence = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        let root_evidence = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
         assert_eq!(root_evidence.file_count, 1);
         assert_eq!(root_evidence.directory_count, 1);
-        assert_eq!(root_evidence.child_directory_names, vec!["subdir".to_string()]);
+        assert_eq!(
+            root_evidence.child_directory_names,
+            vec!["subdir".to_string()]
+        );
         assert_eq!(root_evidence.depth, 0);
 
         let sub_evidence = result.evidence.iter().find(|e| e.name == "subdir").unwrap();
@@ -245,9 +252,16 @@ mod scanner_tests {
         let result = scanner.scan().unwrap();
 
         assert_eq!(result.evidence.len(), 2);
-        let unicode_evidence = result.evidence.iter().find(|e| e.name == "测试目录").unwrap();
+        let unicode_evidence = result
+            .evidence
+            .iter()
+            .find(|e| e.name == "测试目录")
+            .unwrap();
         assert_eq!(unicode_evidence.file_count, 1);
-        assert_eq!(unicode_evidence.extension_histogram.get("txt").copied(), Some(1u64));
+        assert_eq!(
+            unicode_evidence.extension_histogram.get("txt").copied(),
+            Some(1u64)
+        );
         assert_eq!(unicode_evidence.depth, 1);
     }
 
@@ -262,7 +276,11 @@ mod scanner_tests {
         let result = scanner.scan().unwrap();
 
         assert_eq!(result.evidence.len(), 2);
-        let sub_evidence = result.evidence.iter().find(|e| e.name == "My Documents").unwrap();
+        let sub_evidence = result
+            .evidence
+            .iter()
+            .find(|e| e.name == "My Documents")
+            .unwrap();
         assert_eq!(sub_evidence.file_count, 1);
         assert_eq!(sub_evidence.depth, 1);
     }
@@ -297,7 +315,9 @@ mod scanner_tests {
 
         let evidence = &result.evidence[0];
         assert!(evidence.text_file_presence.has_nfo);
-        assert!(evidence.notable_filenames.contains(&"release.nfo".to_string()));
+        assert!(evidence
+            .notable_filenames
+            .contains(&"release.nfo".to_string()));
     }
 
     #[test]
@@ -323,7 +343,11 @@ mod scanner_tests {
         assert!(result.evidence.iter().any(|e| e.name == "level1"));
         assert!(!result.evidence.iter().any(|e| e.name == "level2"));
 
-        let root = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        let root = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
         assert_eq!(root.depth, 0);
         let level0 = result.evidence.iter().find(|e| e.name == "level0").unwrap();
         assert_eq!(level0.depth, 1);
@@ -385,9 +409,18 @@ mod scanner_tests {
         let result = scanner.scan().unwrap();
 
         let evidence = &result.evidence[0];
-        assert!(evidence.partial_scan, "Should be partial when max_total_files is reached during directory iteration");
-        assert_eq!(evidence.file_count, 10, "File count should be capped at max_total_files");
-        assert_eq!(result.metadata.stats.files_skipped, 10, "10 files should be skipped");
+        assert!(
+            evidence.partial_scan,
+            "Should be partial when max_total_files is reached during directory iteration"
+        );
+        assert_eq!(
+            evidence.file_count, 10,
+            "File count should be capped at max_total_files"
+        );
+        assert_eq!(
+            result.metadata.stats.files_skipped, 10,
+            "10 files should be skipped"
+        );
     }
 
     #[test]
@@ -403,7 +436,10 @@ mod scanner_tests {
         let result = scanner.inspect_single().unwrap();
 
         assert_eq!(result.evidence.len(), 1);
-        assert_eq!(result.evidence[0].name, dir.path().file_name().unwrap().to_str().unwrap());
+        assert_eq!(
+            result.evidence[0].name,
+            dir.path().file_name().unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -417,7 +453,11 @@ mod scanner_tests {
         let scanner = Scanner::new(dir.path());
         let result = scanner.scan().unwrap();
 
-        let root_ev = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        let root_ev = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
         assert_eq!(root_ev.depth, 0);
 
         let sub_ev = result.evidence.iter().find(|e| e.name == "subdir").unwrap();
@@ -439,7 +479,11 @@ mod scanner_tests {
         assert_eq!(empty_ev.file_count, 0);
         assert_eq!(empty_ev.directory_count, 0);
 
-        let root_ev = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        let root_ev = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
         assert!(!root_ev.is_empty);
     }
 
@@ -467,7 +511,12 @@ mod scanner_tests {
     fn test_identifier_summary_computed() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("book_978-0-306-40615-7.pdf"), "x").unwrap();
-        fs::write(dir.path().join("song_550e8400-e29b-41d4-a716-446655440000.mp3"), "x").unwrap();
+        fs::write(
+            dir.path()
+                .join("song_550e8400-e29b-41d4-a716-446655440000.mp3"),
+            "x",
+        )
+        .unwrap();
         fs::write(dir.path().join("data_v1.2.3.bin"), "x").unwrap();
 
         let scanner = Scanner::new(dir.path());
@@ -475,9 +524,18 @@ mod scanner_tests {
 
         let evidence = &result.evidence[0];
         assert!(evidence.identifier_summary.total >= 3);
-        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Isbn));
-        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Uuid));
-        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Semver));
+        assert!(evidence
+            .identifier_summary
+            .by_type
+            .contains_key(&IdentifierType::Isbn));
+        assert!(evidence
+            .identifier_summary
+            .by_type
+            .contains_key(&IdentifierType::Uuid));
+        assert!(evidence
+            .identifier_summary
+            .by_type
+            .contains_key(&IdentifierType::Semver));
     }
 
     #[test]

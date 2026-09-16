@@ -40,8 +40,13 @@ fn make_target_evidence(name: &str, path: &PathBuf) -> DirectoryEvidence {
         ],
         identifier_summary: IdentifierSummary::default(),
         child_directory_names: vec![],
-        filename_sample: vec!["001.mp3".to_string(), "002.mp3".to_string(), "003.mp3".to_string(),
-                              "cover.jpg".to_string(), "README.txt".to_string()],
+        filename_sample: vec![
+            "001.mp3".to_string(),
+            "002.mp3".to_string(),
+            "003.mp3".to_string(),
+            "cover.jpg".to_string(),
+            "README.txt".to_string(),
+        ],
         notable_filenames: vec!["README.txt".to_string()],
         syntactic_identifiers: vec![],
         text_file_presence: TextFilePresence {
@@ -105,12 +110,14 @@ fn make_candidate_with_children(
     // children hold the actual content
     let main = make_candidate_evidence(name, path, ext, 0);
     let children: Vec<_> = (0..child_count.min(SAMPLE_CHILD_DIRS))
-        .map(|i| make_candidate_evidence(
-            &format!("child_{}", i),
-            &path.join(format!("child_{}", i)),
-            ext,
-            files_per_child,
-        ))
+        .map(|i| {
+            make_candidate_evidence(
+                &format!("child_{}", i),
+                &path.join(format!("child_{}", i)),
+                ext,
+                files_per_child,
+            )
+        })
         .collect();
 
     let total_children = children.len();
@@ -206,13 +213,11 @@ fn test_classification_move_existing_comics_fixture() {
         directory_count: 0,
         total_size: 5120,
         extension_histogram: ext_hist,
-        dominant_extensions: vec![
-            DominantExtension {
-                extension: "cbz".to_string(),
-                count: 5,
-                percentage: 100.0,
-            },
-        ],
+        dominant_extensions: vec![DominantExtension {
+            extension: "cbz".to_string(),
+            count: 5,
+            percentage: 100.0,
+        }],
         identifier_summary: IdentifierSummary::default(),
         child_directory_names: vec![],
         filename_sample: vec![
@@ -268,7 +273,9 @@ fn test_classification_no_candidates() {
     assert!(result.selected_candidate.is_none());
     assert!(result.proposed_category_name.is_some());
     assert_eq!(result.candidates_considered, 0);
-    assert!(result.uncertainty.contains(&UncertaintyReason::InsufficientPrecedent));
+    assert!(result
+        .uncertainty
+        .contains(&UncertaintyReason::InsufficientPrecedent));
 }
 
 #[test]
@@ -312,7 +319,12 @@ fn test_classification_competing_candidates_ask_user() {
     // Two candidates with identical extensions and file counts — very close scores
     let candidate_a = CandidateEvidence {
         directory: make_candidate_evidence("MusicA", &PathBuf::from("/lib/MusicA"), "mp3", 5),
-        children: vec![make_candidate_evidence("child1", &PathBuf::from("/lib/MusicA/child1"), "mp3", 3)],
+        children: vec![make_candidate_evidence(
+            "child1",
+            &PathBuf::from("/lib/MusicA/child1"),
+            "mp3",
+            3,
+        )],
         summary: CandidateSummary {
             total_children: 1,
             top_extensions: vec!["mp3".to_string()],
@@ -323,7 +335,12 @@ fn test_classification_competing_candidates_ask_user() {
 
     let candidate_b = CandidateEvidence {
         directory: make_candidate_evidence("MusicB", &PathBuf::from("/lib/MusicB"), "mp3", 5),
-        children: vec![make_candidate_evidence("child1", &PathBuf::from("/lib/MusicB/child1"), "mp3", 3)],
+        children: vec![make_candidate_evidence(
+            "child1",
+            &PathBuf::from("/lib/MusicB/child1"),
+            "mp3",
+            3,
+        )],
         summary: CandidateSummary {
             total_children: 1,
             top_extensions: vec!["mp3".to_string()],
@@ -343,7 +360,9 @@ fn test_classification_competing_candidates_ask_user() {
 
     // Two nearly identical candidates → ask user
     assert!(matches!(result.decision, ClassificationDecision::AskUser));
-    assert!(result.uncertainty.contains(&UncertaintyReason::AmbiguousCandidates));
+    assert!(result
+        .uncertainty
+        .contains(&UncertaintyReason::AmbiguousCandidates));
 }
 
 #[test]
@@ -357,13 +376,17 @@ fn test_classification_partial_scan_target_never_move_existing() {
     };
 
     // Create a strong candidate that would normally trigger MOVE_EXISTING
-    let candidate = make_candidate_with_children("Audio", &PathBuf::from("/lib/Audio"), "mp3", 10, 5);
+    let candidate =
+        make_candidate_with_children("Audio", &PathBuf::from("/lib/Audio"), "mp3", 10, 5);
 
     let config = ClassificationConfig::default();
     let result = DecisionEngine::classify(&target_input, &[candidate], &config);
 
     // Partial scan on target → never MOVE_EXISTING
-    assert!(!matches!(result.decision, ClassificationDecision::MoveExisting));
+    assert!(!matches!(
+        result.decision,
+        ClassificationDecision::MoveExisting
+    ));
     assert!(result.warnings.contains(&Warning::PartialScanTarget));
 }
 
@@ -381,7 +404,10 @@ fn test_classification_determinism() {
 
     assert_eq!(result1.decision, result2.decision);
     assert_eq!(result1.confidence, result2.confidence);
-    assert_eq!(result1.supporting_evidence.len(), result2.supporting_evidence.len());
+    assert_eq!(
+        result1.supporting_evidence.len(),
+        result2.supporting_evidence.len()
+    );
 }
 
 #[test]
@@ -405,8 +431,14 @@ fn test_classification_no_filesystem_modification() {
     }
 
     // Record file listings before classification
-    let target_files_before: Vec<_> = fs::read_dir(&target_dir).unwrap().collect::<Result<_, _>>().unwrap();
-    let candidate_files_before: Vec<_> = fs::read_dir(&candidate_dir).unwrap().collect::<Result<_, _>>().unwrap();
+    let target_files_before: Vec<_> = fs::read_dir(&target_dir)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let candidate_files_before: Vec<_> = fs::read_dir(&candidate_dir)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
 
     // Scan and classify
     let scanner = Scanner::new(&target_dir);
@@ -441,8 +473,14 @@ fn test_classification_no_filesystem_modification() {
     let _ = DecisionEngine::classify(&target_input, &[candidate], &config);
 
     // Verify filesystem unchanged
-    let target_files_after: Vec<_> = fs::read_dir(&target_dir).unwrap().collect::<Result<_, _>>().unwrap();
-    let candidate_files_after: Vec<_> = fs::read_dir(&candidate_dir).unwrap().collect::<Result<_, _>>().unwrap();
+    let target_files_after: Vec<_> = fs::read_dir(&target_dir)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let candidate_files_after: Vec<_> = fs::read_dir(&candidate_dir)
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
 
     assert_eq!(target_files_before.len(), target_files_after.len());
     assert_eq!(candidate_files_before.len(), candidate_files_after.len());
@@ -489,7 +527,11 @@ fn test_classification_input_from_directory() {
             .filter_map(|e| {
                 let e = e.ok()?;
                 let p = e.path();
-                if p.is_dir() { Some(p) } else { None }
+                if p.is_dir() {
+                    Some(p)
+                } else {
+                    None
+                }
             })
             .collect()
     } else {
@@ -500,7 +542,8 @@ fn test_classification_input_from_directory() {
         target_evidence.clone(),
         &candidate_dirs,
         scan.metadata,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(input.target.path, target_evidence.path);
     assert!(input.candidates.len() <= MAX_CANDIDATES);

@@ -149,7 +149,10 @@ impl Scanner {
 
             match scan_single_directory(&dir, &state.root_path, &state, depth) {
                 Ok((evidence, subdirs)) => {
-                    state.stats.directories_scanned.fetch_add(1, Ordering::Relaxed);
+                    state
+                        .stats
+                        .directories_scanned
+                        .fetch_add(1, Ordering::Relaxed);
                     all_evidence.push(evidence);
                     for subdir in subdirs.into_iter().rev() {
                         dirs_to_scan.push((subdir, depth + 1));
@@ -257,7 +260,10 @@ impl Scanner {
 
         match scan_single_directory(root, root, &state, 0) {
             Ok((evidence, _subdirs)) => {
-                state.stats.directories_scanned.fetch_add(1, Ordering::Relaxed);
+                state
+                    .stats
+                    .directories_scanned
+                    .fetch_add(1, Ordering::Relaxed);
                 all_evidence.push(evidence);
             }
             Err(e) => {
@@ -310,10 +316,7 @@ fn compute_dominant_extensions(
     file_count: u64,
     max_entries: usize,
 ) -> Vec<DominantExtension> {
-    let mut entries: Vec<(String, u64)> = histogram
-        .iter()
-        .map(|(k, &v)| (k.clone(), v))
-        .collect();
+    let mut entries: Vec<(String, u64)> = histogram.iter().map(|(k, &v)| (k.clone(), v)).collect();
     entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     entries.truncate(max_entries);
 
@@ -334,18 +337,13 @@ fn compute_dominant_extensions(
         .collect()
 }
 
-fn compute_identifier_summary(
-    identifiers: &[SyntacticIdentifier],
-) -> IdentifierSummary {
+fn compute_identifier_summary(identifiers: &[SyntacticIdentifier]) -> IdentifierSummary {
     let total = identifiers.len();
     let mut by_type: HashMap<IdentifierType, usize> = HashMap::new();
     for id in identifiers {
         *by_type.entry(id.identifier_type.clone()).or_insert(0) += 1;
     }
-    IdentifierSummary {
-        total,
-        by_type,
-    }
+    IdentifierSummary { total, by_type }
 }
 
 fn scan_single_directory(
@@ -453,7 +451,10 @@ fn scan_single_directory(
                 continue;
             }
             file_count += 1;
-            state.stats.files_encountered.fetch_add(1, Ordering::Relaxed);
+            state
+                .stats
+                .files_encountered
+                .fetch_add(1, Ordering::Relaxed);
 
             let metadata = match entry.metadata() {
                 Ok(m) => m,
@@ -475,7 +476,8 @@ fn scan_single_directory(
             total_size += size;
             state.stats.bytes_scanned.fetch_add(size, Ordering::Relaxed);
 
-            let extension = path.extension()
+            let extension = path
+                .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_lowercase())
                 .unwrap_or_else(|| "(no extension)".to_string());
@@ -518,9 +520,12 @@ fn scan_single_directory(
     notable_filenames.dedup();
 
     syntactic_identifiers.sort_by(|a, b| {
-        a.value.cmp(&b.value).then_with(|| a.source_filename.cmp(&b.source_filename))
+        a.value
+            .cmp(&b.value)
+            .then_with(|| a.source_filename.cmp(&b.source_filename))
     });
-    syntactic_identifiers.dedup_by(|a, b| a.value == b.value && a.source_filename == b.source_filename);
+    syntactic_identifiers
+        .dedup_by(|a, b| a.value == b.value && a.source_filename == b.source_filename);
 
     let dominant_extensions = compute_dominant_extensions(&extension_histogram, file_count, 10);
     let identifier_summary = compute_identifier_summary(&syntactic_identifiers);
@@ -618,7 +623,9 @@ fn scan_directory_partial(
                     let ext_lower = ext.to_lowercase();
                     *extension_histogram.entry(ext_lower).or_insert(0) += 1;
                 } else {
-                    *extension_histogram.entry("(no extension)".to_string()).or_insert(0) += 1;
+                    *extension_histogram
+                        .entry("(no extension)".to_string())
+                        .or_insert(0) += 1;
                 }
             }
         }
@@ -731,13 +738,19 @@ fn update_text_file_presence(
     }
     if lower_name.starts_with("license") {
         presence.has_license = true;
-        if !presence.text_files_found.contains(&original_name.to_string()) {
+        if !presence
+            .text_files_found
+            .contains(&original_name.to_string())
+        {
             presence.text_files_found.push(original_name.to_string());
         }
     }
     if lower_name.starts_with("changelog") || lower_name.starts_with("changes") {
         presence.has_changelog = true;
-        if !presence.text_files_found.contains(&original_name.to_string()) {
+        if !presence
+            .text_files_found
+            .contains(&original_name.to_string())
+        {
             presence.text_files_found.push(original_name.to_string());
         }
     }
@@ -851,7 +864,10 @@ fn extract_isbn10(s: &str) -> Option<String> {
 }
 
 fn extract_isbn13(s: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?:97[89][-\s]?(?:\d[-\s]?){1,5}\d[-\s]?(?:\d[-\s]?){1,7}\d[-\s]?(?:\d[-\s]?){1,7}\d)").ok()?;
+    let re = regex::Regex::new(
+        r"(?:97[89][-\s]?(?:\d[-\s]?){1,5}\d[-\s]?(?:\d[-\s]?){1,7}\d[-\s]?(?:\d[-\s]?){1,7}\d)",
+    )
+    .ok()?;
     re.find(s).map(|m| m.as_str().to_string())
 }
 
@@ -864,7 +880,8 @@ fn extract_uuid(s: &str) -> Option<String> {
     let re = regex::Regex::new(
         r"(?:^|[^0-9a-fA-F])([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[^0-9a-fA-F]|$)"
     ).ok()?;
-    re.captures(s).and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+    re.captures(s)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }
 
 fn extract_semver(s: &str) -> Option<String> {
@@ -877,7 +894,9 @@ fn extract_semver(s: &str) -> Option<String> {
 fn extract_hash(s: &str) -> Option<String> {
     let re = regex::Regex::new(r"(?:^|[^0-9a-fA-F])([a-fA-F0-9]{32})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{40})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{64})(?:[^0-9a-fA-F]|$)").ok()?;
     re.captures(s).and_then(|caps| {
-        caps.get(1).or_else(|| caps.get(2)).or_else(|| caps.get(3))
+        caps.get(1)
+            .or_else(|| caps.get(2))
+            .or_else(|| caps.get(3))
             .map(|m| m.as_str().to_string())
     })
 }
@@ -886,7 +905,11 @@ fn extract_date(s: &str) -> Option<String> {
     let re = regex::Regex::new(
         r"(?:^|[^0-9A-Za-z.-])(19|20)\d{2}[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](19|20)\d{2}(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)"
     ).ok()?;
-    re.find(s).map(|m| m.as_str().trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
+    re.find(s).map(|m| {
+        m.as_str()
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+            .to_string()
+    })
 }
 
 fn extract_email(s: &str) -> Option<String> {
@@ -900,7 +923,8 @@ fn extract_url(s: &str) -> Option<String> {
 }
 
 fn extract_alphanumeric_codes(s: &str) -> Vec<SyntacticIdentifier> {
-    let re = regex::Regex::new(r"[A-Z]{2,}[-_]?\d{3,}(?:[-_]\d+)*|[A-Z]{2,}[-_]?[A-Z]+\d{2,}").unwrap();
+    let re =
+        regex::Regex::new(r"[A-Z]{2,}[-_]?\d{3,}(?:[-_]\d+)*|[A-Z]{2,}[-_]?[A-Z]+\d{2,}").unwrap();
     re.find_iter(s)
         .take(MAX_IDENTIFIERS_PER_FILE)
         .map(|m| SyntacticIdentifier {
@@ -937,16 +961,14 @@ fn select_representative_filenames(
         if result.len() >= id_budget {
             break;
         }
-        if c.has_identifier && try_add(c, &mut result, &mut ext_count, budget, max_per_ext) {
-        }
+        if c.has_identifier && try_add(c, &mut result, &mut ext_count, budget, max_per_ext) {}
     }
 
     for c in candidates.iter() {
         if result.len() >= budget {
             break;
         }
-        if c.is_notable && try_add(c, &mut result, &mut ext_count, budget, max_per_ext) {
-        }
+        if c.is_notable && try_add(c, &mut result, &mut ext_count, budget, max_per_ext) {}
     }
 
     let mut rare_candidates: Vec<&FileCandidate> = candidates
@@ -1082,15 +1104,17 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_candidates_single_ext(names: &[&str], extension: &str) -> Vec<FileCandidate> {
-        names.iter().enumerate().map(|(i, name)| {
-            FileCandidate {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| FileCandidate {
                 name: name.to_string(),
                 extension: extension.to_string(),
                 has_identifier: false,
                 is_notable: false,
                 position: i,
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     fn make_candidates_multi(
@@ -1099,18 +1123,22 @@ mod tests {
         identifiers: &[&str],
         notable: &[&str],
     ) -> Vec<FileCandidate> {
-        names.iter().enumerate().map(|(i, name)| {
-            let ext = extensions.get(i).map(|s| s.to_string()).unwrap_or_default();
-            let has_id = identifiers.contains(name);
-            let is_notable = notable.contains(name);
-            FileCandidate {
-                name: name.to_string(),
-                extension: ext,
-                has_identifier: has_id,
-                is_notable: is_notable,
-                position: i,
-            }
-        }).collect()
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let ext = extensions.get(i).map(|s| s.to_string()).unwrap_or_default();
+                let has_id = identifiers.contains(name);
+                let is_notable = notable.contains(name);
+                FileCandidate {
+                    name: name.to_string(),
+                    extension: ext,
+                    has_identifier: has_id,
+                    is_notable: is_notable,
+                    position: i,
+                }
+            })
+            .collect()
     }
 
     fn make_ext_hist_from_candidates(candidates: &[FileCandidate]) -> HashMap<String, u64> {
@@ -1135,7 +1163,11 @@ mod tests {
             if budget >= 2 {
                 let first_in_result = result.iter().any(|n| n.starts_with("001.mp3"));
                 let last_in_result = result.iter().any(|n| n.starts_with("2981.mp3"));
-                assert!(first_in_result, "Budget {} should include first file", budget);
+                assert!(
+                    first_in_result,
+                    "Budget {} should include first file",
+                    budget
+                );
                 assert!(last_in_result, "Budget {} should include last file", budget);
             }
 
@@ -1144,48 +1176,96 @@ mod tests {
                     let num: u32 = n.trim_end_matches(".mp3").parse().unwrap();
                     num >= 900 && num <= 2100
                 });
-                assert!(has_mid, "Budget {} should include a file from the middle region", budget);
+                assert!(
+                    has_mid,
+                    "Budget {} should include a file from the middle region",
+                    budget
+                );
             }
         }
     }
 
     #[test]
     fn test_mixed_extensions_rare_preserved() {
-        let names = vec!["001.mp3", "002.mp3", "003.mp3", "004.mp3", "005.mp3",
-                         "006.mp3", "007.mp3", "008.mp3", "009.mp3", "010.mp3",
-                         "cover.jpg", "README.txt", "config.unknown"];
-        let extensions = vec!["mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3",
-                              "jpg", "txt", "unknown"];
+        let names = vec![
+            "001.mp3",
+            "002.mp3",
+            "003.mp3",
+            "004.mp3",
+            "005.mp3",
+            "006.mp3",
+            "007.mp3",
+            "008.mp3",
+            "009.mp3",
+            "010.mp3",
+            "cover.jpg",
+            "README.txt",
+            "config.unknown",
+        ];
+        let extensions = vec![
+            "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "mp3", "jpg", "txt",
+            "unknown",
+        ];
         let candidates = make_candidates_multi(&names, &extensions, &[], &[]);
         let ext_hist = make_ext_hist_from_candidates(&candidates);
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        assert!(result.contains(&"cover.jpg".to_string()), "Should include rare .jpg");
-        assert!(result.contains(&"README.txt".to_string()), "Should include rare .txt");
-        assert!(result.contains(&"config.unknown".to_string()), "Should include rare .unknown");
-        assert!(result.contains(&"001.mp3".to_string()), "Should include first .mp3");
+        assert!(
+            result.contains(&"cover.jpg".to_string()),
+            "Should include rare .jpg"
+        );
+        assert!(
+            result.contains(&"README.txt".to_string()),
+            "Should include rare .txt"
+        );
+        assert!(
+            result.contains(&"config.unknown".to_string()),
+            "Should include rare .unknown"
+        );
+        assert!(
+            result.contains(&"001.mp3".to_string()),
+            "Should include first .mp3"
+        );
     }
 
     #[test]
     fn test_notable_files_priority() {
         let mut names: Vec<String> = (1..=50).map(|i| format!("{:03}.mp3", i)).collect();
-        names.extend_from_slice(&["README.md".to_string(), "LICENSE".to_string(), "cover.jpg".to_string()]);
+        names.extend_from_slice(&[
+            "README.md".to_string(),
+            "LICENSE".to_string(),
+            "cover.jpg".to_string(),
+        ]);
         let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
 
         let mut extensions: Vec<String> = (0..50).map(|_| "mp3".to_string()).collect();
-        extensions.extend_from_slice(&["md".to_string(), "(no extension)".to_string(), "jpg".to_string()]);
+        extensions.extend_from_slice(&[
+            "md".to_string(),
+            "(no extension)".to_string(),
+            "jpg".to_string(),
+        ]);
 
         let ext_vec: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
 
-        let candidates = make_candidates_multi(&name_refs, &ext_vec, &[], &["README.md", "LICENSE"]);
+        let candidates =
+            make_candidates_multi(&name_refs, &ext_vec, &[], &["README.md", "LICENSE"]);
         let ext_hist = make_ext_hist_from_candidates(&candidates);
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        assert!(result.contains(&"README.md".to_string()), "Should include README.md");
-        assert!(result.contains(&"LICENSE".to_string()), "Should include LICENSE");
-        assert!(result.contains(&"cover.jpg".to_string()), "Should include cover.jpg");
+        assert!(
+            result.contains(&"README.md".to_string()),
+            "Should include README.md"
+        );
+        assert!(
+            result.contains(&"LICENSE".to_string()),
+            "Should include LICENSE"
+        );
+        assert!(
+            result.contains(&"cover.jpg".to_string()),
+            "Should include cover.jpg"
+        );
     }
 
     #[test]
@@ -1214,7 +1294,10 @@ mod tests {
         assert!(result.contains(&"song_550e8400-e29b-41d4-a716-446655440000.mp3".to_string()));
         assert!(result.contains(&"doc_10.1038_nature12373_2024-01-15.pdf".to_string()));
         assert!(result.contains(&"data_978-0-306-40615-7_v1.2.3.bin".to_string()));
-        assert!(result.iter().any(|n| n.starts_with("file0")), "Should include at least one regular file");
+        assert!(
+            result.iter().any(|n| n.starts_with("file0")),
+            "Should include at least one regular file"
+        );
     }
 
     #[test]
@@ -1227,8 +1310,18 @@ mod tests {
         for budget in [1, 2, 3, 5, 10] {
             let result1 = select_representative_filenames(&candidates, &ext_hist, budget);
             let result2 = select_representative_filenames(&candidates, &ext_hist, budget);
-            assert_eq!(result1, result2, "Budget {} should be deterministic", budget);
-            assert_eq!(result1.len(), budget, "Budget {} should return {} items", budget, budget);
+            assert_eq!(
+                result1, result2,
+                "Budget {} should be deterministic",
+                budget
+            );
+            assert_eq!(
+                result1.len(),
+                budget,
+                "Budget {} should return {} items",
+                budget,
+                budget
+            );
 
             if budget == 1 {
                 assert_eq!(result1, vec!["001.mp3"]);
@@ -1262,8 +1355,7 @@ mod tests {
         let result2 = scanner2.scan().unwrap();
 
         assert_eq!(
-            result1.evidence[0].filename_sample,
-            result2.evidence[0].filename_sample,
+            result1.evidence[0].filename_sample, result2.evidence[0].filename_sample,
             "Repeated scans must produce identical filename_sample"
         );
     }
@@ -1298,8 +1390,14 @@ mod tests {
 
         let evidence = &result.evidence[0];
         assert!(evidence.partial_scan, "Should be marked as partial");
-        assert!(evidence.filename_sample.len() <= 10, "filename_sample should be bounded");
-        assert_eq!(evidence.file_count, 50, "File count should be limited by max_files_per_dir");
+        assert!(
+            evidence.filename_sample.len() <= 10,
+            "filename_sample should be bounded"
+        );
+        assert_eq!(
+            evidence.file_count, 50,
+            "File count should be limited by max_files_per_dir"
+        );
     }
 
     #[test]
@@ -1322,8 +1420,7 @@ mod tests {
         let result2 = scanner2.scan().unwrap();
 
         assert_eq!(
-            result1.evidence[0].filename_sample,
-            result2.evidence[0].filename_sample,
+            result1.evidence[0].filename_sample, result2.evidence[0].filename_sample,
             "Unicode filenames should be handled deterministically"
         );
     }
@@ -1344,8 +1441,14 @@ mod tests {
 
         let result = select_representative_filenames(&candidates, &ext_hist, 10);
 
-        assert!(result.contains(&"cover.jpg".to_string()), "Should include rare .jpg");
-        assert!(result.contains(&"data.bin".to_string()), "Should include rare .bin");
+        assert!(
+            result.contains(&"cover.jpg".to_string()),
+            "Should include rare .jpg"
+        );
+        assert!(
+            result.contains(&"data.bin".to_string()),
+            "Should include rare .bin"
+        );
         assert_eq!(result.len(), 10);
     }
 
@@ -1358,14 +1461,21 @@ mod tests {
         assert_eq!(result.len(), 3);
         assert_eq!(result[0], 0);
         assert_eq!(result[1], 999);
-        assert!(result[2] >= 400 && result[2] <= 600, "Middle position should be around 500, got {}", result[2]);
+        assert!(
+            result[2] >= 400 && result[2] <= 600,
+            "Middle position should be around 500, got {}",
+            result[2]
+        );
 
         assert!(compute_structural_positions(5, 10).is_empty());
 
         let result = compute_structural_positions(1000, 20);
         let unique: std::collections::HashSet<usize> = result.iter().copied().collect();
         assert_eq!(unique.len(), result.len(), "Positions must be unique");
-        assert!(result.iter().all(|&p| p < 1000), "All positions must be within bounds");
+        assert!(
+            result.iter().all(|&p| p < 1000),
+            "All positions must be within bounds"
+        );
         assert_eq!(result.len(), 20);
     }
 
@@ -1387,7 +1497,11 @@ mod tests {
             let filenames = &result.evidence[0].filename_sample;
 
             let unique: std::collections::HashSet<_> = filenames.iter().collect();
-            assert_eq!(unique.len(), filenames.len(), "No duplicate filenames in result");
+            assert_eq!(
+                unique.len(),
+                filenames.len(),
+                "No duplicate filenames in result"
+            );
             assert_eq!(filenames.len(), 20);
         }
     }
@@ -1403,7 +1517,11 @@ mod tests {
         let scanner = Scanner::new(dir.path());
         let result = scanner.scan().unwrap();
 
-        let root_ev = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        let root_ev = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
         assert_eq!(root_ev.depth, 0);
 
         let level1 = result.evidence.iter().find(|e| e.name == "level1").unwrap();
@@ -1428,7 +1546,11 @@ mod tests {
         assert_eq!(empty_ev.file_count, 0);
         assert_eq!(empty_ev.directory_count, 0);
 
-        let root_ev = result.evidence.iter().find(|e| e.parent_path.is_none()).unwrap();
+        let root_ev = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
         assert!(!root_ev.is_empty);
     }
 
@@ -1456,7 +1578,12 @@ mod tests {
     fn test_identifier_summary_computed() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("book_978-0-306-40615-7.pdf"), "x").unwrap();
-        fs::write(dir.path().join("song_550e8400-e29b-41d4-a716-446655440000.mp3"), "x").unwrap();
+        fs::write(
+            dir.path()
+                .join("song_550e8400-e29b-41d4-a716-446655440000.mp3"),
+            "x",
+        )
+        .unwrap();
         fs::write(dir.path().join("data_v1.2.3.bin"), "x").unwrap();
 
         let scanner = Scanner::new(dir.path());
@@ -1464,9 +1591,18 @@ mod tests {
 
         let evidence = &result.evidence[0];
         assert!(evidence.identifier_summary.total >= 3);
-        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Isbn));
-        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Uuid));
-        assert!(evidence.identifier_summary.by_type.contains_key(&IdentifierType::Semver));
+        assert!(evidence
+            .identifier_summary
+            .by_type
+            .contains_key(&IdentifierType::Isbn));
+        assert!(evidence
+            .identifier_summary
+            .by_type
+            .contains_key(&IdentifierType::Uuid));
+        assert!(evidence
+            .identifier_summary
+            .by_type
+            .contains_key(&IdentifierType::Semver));
     }
 
     #[test]

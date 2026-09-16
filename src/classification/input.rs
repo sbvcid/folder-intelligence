@@ -103,7 +103,8 @@ impl ClassificationInput {
 
             let mut ext_counts: HashMap<String, u64> = HashMap::new();
             let mut file_count_sum: u64 = 0;
-            let mut id_type_counts: HashMap<crate::evidence::IdentifierType, usize> = HashMap::new();
+            let mut id_type_counts: HashMap<crate::evidence::IdentifierType, usize> =
+                HashMap::new();
             for c in &children {
                 file_count_sum += c.file_count;
                 for (ext, cnt) in &c.extension_histogram {

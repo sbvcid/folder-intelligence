@@ -1,10 +1,10 @@
+use crate::agent::intent::{Goal, TaskIntent};
+use crate::classification::{
+    ClassificationDecision, ClassificationInput, ClassificationProcessor, ClassificationResult,
+    RuleBasedProcessor,
+};
 use crate::evidence::{DirectoryEvidence, ScanLimits, ScanResult};
 use crate::scanner::Scanner;
-use crate::classification::{
-    ClassificationInput, ClassificationResult, ClassificationDecision,
-    ClassificationProcessor, RuleBasedProcessor,
-};
-use crate::agent::intent::{TaskIntent, Goal};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -129,11 +129,21 @@ pub struct TaskAnalysis {
 
 pub struct EvidenceAnalyzer;
 
-const DOCUMENT_EXTS: &[&str] = &["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf", "odt", "odp", "ods"];
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "svg", "ico", "raw"];
+const DOCUMENT_EXTS: &[&str] = &[
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf", "odt", "odp",
+    "ods",
+];
+const IMAGE_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "svg", "ico", "raw",
+];
 const ARCHIVE_EXTS: &[&str] = &["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "tbz2"];
-const MEDIA_EXTS: &[&str] = &["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "mp3", "wav", "flac", "aac", "ogg"];
-const CODE_EXTS: &[&str] = &["py", "js", "ts", "rs", "go", "java", "c", "cpp", "h", "hpp", "sh", "rb", "php", "html", "css", "json", "xml", "yaml", "yml", "toml"];
+const MEDIA_EXTS: &[&str] = &[
+    "mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "mp3", "wav", "flac", "aac", "ogg",
+];
+const CODE_EXTS: &[&str] = &[
+    "py", "js", "ts", "rs", "go", "java", "c", "cpp", "h", "hpp", "sh", "rb", "php", "html", "css",
+    "json", "xml", "yaml", "yml", "toml",
+];
 const INSTALLER_EXTS: &[&str] = &["exe", "msi", "dmg", "pkg", "deb", "rpm", "appimage"];
 const DATA_EXTS: &[&str] = &["db", "sqlite", "sqlite3", "dat", "bin"];
 const CONFIG_EXTS: &[&str] = &["conf", "cfg", "ini", "env", "properties"];
@@ -173,7 +183,11 @@ impl EvidenceAnalyzer {
         let content_groups = Self::group_content(&scope_evidence);
         let structure_summary = Self::build_structure_summary(&scope_evidence, &content_groups);
         let candidate_categories = Self::find_candidate_categories(scope, &scan_metadata);
-        let classification_results = self.run_classification(&scope_evidence, &candidate_categories, scan_metadata.clone())?;
+        let classification_results = self.run_classification(
+            &scope_evidence,
+            &candidate_categories,
+            scan_metadata.clone(),
+        )?;
         let anomalies = Self::detect_anomalies(&scope_evidence);
         let ambiguities = Self::detect_ambiguities(&scope_evidence, &classification_results);
         let evidence_gaps = self.identify_gaps(intent, &content_groups, &classification_results);
@@ -270,7 +284,7 @@ impl EvidenceAnalyzer {
         let mut mixed_content_dirs = false;
         for ext in evidence.extension_histogram.keys() {
             let ct = Self::classify_extension(ext);
-                        if content_groups.iter().filter(|g| g.category == ct).count() > 1 {
+            if content_groups.iter().filter(|g| g.category == ct).count() > 1 {
                 mixed_content_dirs = true;
                 break;
             }
@@ -301,7 +315,8 @@ impl EvidenceAnalyzer {
                 let path = entry.path();
                 if path.is_dir() && !path.is_symlink() {
                     let child_meta = metadata.limits.clone();
-                    if let Ok(child_scan) = Scanner::with_limits(&path, child_meta).inspect_single() {
+                    if let Ok(child_scan) = Scanner::with_limits(&path, child_meta).inspect_single()
+                    {
                         if let Some(ev) = child_scan.evidence.into_iter().next() {
                             categories.push(CandidateCategory {
                                 name: ev.name.clone(),
@@ -381,7 +396,9 @@ impl EvidenceAnalyzer {
             anomalies.push(Anomaly {
                 path: evidence.path.clone(),
                 anomaly_type: AnomalyType::MixedContent,
-                description: "Large number of files in a single directory (possible flat structure)".to_string(),
+                description:
+                    "Large number of files in a single directory (possible flat structure)"
+                        .to_string(),
                 evidence: serde_json::json!({
                     "file_count": evidence.file_count,
                     "directory_count": evidence.directory_count,
@@ -425,7 +442,8 @@ impl EvidenceAnalyzer {
             anomalies.push(Anomaly {
                 path: evidence.path.clone(),
                 anomaly_type: AnomalyType::MixedContent,
-                description: "Many different file types detected (possible lack of organization)".to_string(),
+                description: "Many different file types detected (possible lack of organization)"
+                    .to_string(),
                 evidence: serde_json::json!({
                     "unique_extensions": evidence.extension_histogram.len(),
                 }),
@@ -501,10 +519,15 @@ impl EvidenceAnalyzer {
             .unwrap_or_default()
             .to_lowercase();
 
-        if content_groups.is_empty() || content_groups.iter().all(|g| g.category == ContentType::Other) {
+        if content_groups.is_empty()
+            || content_groups
+                .iter()
+                .all(|g| g.category == ContentType::Other)
+        {
             gaps.push(EvidenceGap {
                 gap_type: GapType::Taxonomy,
-                description: "No recognizable file categories found — user-defined taxonomy needed".to_string(),
+                description: "No recognizable file categories found — user-defined taxonomy needed"
+                    .to_string(),
                 requires_user_input: true,
             });
         }
@@ -513,7 +536,8 @@ impl EvidenceAnalyzer {
             if purpose == "general_organization" {
                 gaps.push(EvidenceGap {
                     gap_type: GapType::Taxonomy,
-                    description: "General organization requested — specific taxonomy not specified".to_string(),
+                    description: "General organization requested — specific taxonomy not specified"
+                        .to_string(),
                     requires_user_input: true,
                 });
             }
@@ -527,10 +551,14 @@ impl EvidenceAnalyzer {
             });
         }
 
-        if classification_results.iter().any(|r| matches!(r.decision, ClassificationDecision::AskUser)) {
+        if classification_results
+            .iter()
+            .any(|r| matches!(r.decision, ClassificationDecision::AskUser))
+        {
             gaps.push(EvidenceGap {
                 gap_type: GapType::DuplicateHandling,
-                description: "Some files have conflicting classifications requiring user input".to_string(),
+                description: "Some files have conflicting classifications requiring user input"
+                    .to_string(),
                 requires_user_input: true,
             });
         }

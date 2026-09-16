@@ -1,8 +1,8 @@
+use crate::agent::analysis::EvidenceGap;
 use crate::agent::intent::{Goal, TaskIntent};
 use crate::agent::recommendation::{
     ClarificationQuestion, ConstraintViolation, Recommendation, RecommendationEngine,
 };
-use crate::agent::analysis::EvidenceGap;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -134,17 +134,11 @@ impl Default for ClarificationEngine {
 
 #[allow(dead_code)]
 impl ClarificationEngine {
-    pub fn start(
-        &self,
-        recommendation: &Recommendation,
-    ) -> Vec<ClarificationQuestion> {
+    pub fn start(&self, recommendation: &Recommendation) -> Vec<ClarificationQuestion> {
         recommendation.unresolved_questions.clone()
     }
 
-    pub fn blocked_operations(
-        &self,
-        recommendation: &Recommendation,
-    ) -> Vec<String> {
+    pub fn blocked_operations(&self, recommendation: &Recommendation) -> Vec<String> {
         if let Some(ref violation) = recommendation.constraint_violation {
             violation.blocked_operations.clone()
         } else {
@@ -152,11 +146,7 @@ impl ClarificationEngine {
         }
     }
 
-    pub fn apply_decisions(
-        &self,
-        intent: &TaskIntent,
-        decisions: &[UserDecision],
-    ) -> TaskIntent {
+    pub fn apply_decisions(&self, intent: &TaskIntent, decisions: &[UserDecision]) -> TaskIntent {
         let mut updated = intent.clone();
 
         for decision in decisions {
@@ -179,7 +169,8 @@ impl ClarificationEngine {
                 DecisionCategory::ArchiveOld => {
                     if let Some(b) = decision.answer.as_bool() {
                         if b {
-                            updated.constraints.archive_old = Some(Duration::from_secs(365 * 86400));
+                            updated.constraints.archive_old =
+                                Some(Duration::from_secs(365 * 86400));
                         } else {
                             updated.constraints.archive_old = None;
                         }
@@ -313,13 +304,19 @@ impl ClarificationEngine {
         let context = question.context.to_lowercase();
         let combined = format!("{} {}", q, context);
 
-        if combined.contains("archive") || combined.contains("archive_old") || combined.contains("archive policy") {
+        if combined.contains("archive")
+            || combined.contains("archive_old")
+            || combined.contains("archive policy")
+        {
             DecisionCategory::ArchiveOld
         } else if combined.contains("preserve") || combined.contains("folder") {
             DecisionCategory::PreserveExistingFolders
         } else if combined.contains("duplicate") || combined.contains("merge") {
             DecisionCategory::DuplicateHandling
-        } else if combined.contains("category") || combined.contains("structure") || combined.contains("taxonomy") {
+        } else if combined.contains("category")
+            || combined.contains("structure")
+            || combined.contains("taxonomy")
+        {
             DecisionCategory::TaxonomyChoice
         } else if combined.contains("disposition") || combined.contains("unclassified") {
             DecisionCategory::FileDisposition
@@ -347,10 +344,7 @@ impl ClarificationEngine {
         recommendation.unresolved_questions.is_empty()
     }
 
-    pub fn summarize(
-        &self,
-        recommendation: &Recommendation,
-    ) -> String {
+    pub fn summarize(&self, recommendation: &Recommendation) -> String {
         let mut summary = String::new();
 
         summary.push_str(&format!("Strategy: {:?}\n", recommendation.strategy));
@@ -392,7 +386,10 @@ impl ClarificationEngine {
         }
 
         summary.push('\n');
-        summary.push_str(&format!("Confidence: {:.0}%\n", recommendation.confidence * 100.0));
+        summary.push_str(&format!(
+            "Confidence: {:.0}%\n",
+            recommendation.confidence * 100.0
+        ));
 
         if !recommendation.warnings.is_empty() {
             summary.push_str("Warnings:\n");
@@ -406,9 +403,7 @@ impl ClarificationEngine {
 }
 
 #[allow(dead_code)]
-pub fn apply_evidence_gaps_to_questions(
-    gaps: &[EvidenceGap],
-) -> Vec<ClarificationQuestion> {
+pub fn apply_evidence_gaps_to_questions(gaps: &[EvidenceGap]) -> Vec<ClarificationQuestion> {
     let mut questions = Vec::new();
     let mut idx = 0;
 

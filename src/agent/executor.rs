@@ -60,7 +60,10 @@ impl UndoConflict {
             UndoConflict::TargetExists { path, message } => {
                 format!("{} — {}", message, path.display())
             }
-            UndoConflict::NotUndoable { operation_type, message } => {
+            UndoConflict::NotUndoable {
+                operation_type,
+                message,
+            } => {
                 format!("{} — {}", message, operation_type)
             }
         }
@@ -149,7 +152,10 @@ impl OperationLog {
 
     #[allow(dead_code)]
     pub fn failed_entries(&self) -> Vec<&LogEntry> {
-        self.entries.iter().filter(|e| e.status.is_failed()).collect()
+        self.entries
+            .iter()
+            .filter(|e| e.status.is_failed())
+            .collect()
     }
 }
 
@@ -250,19 +256,22 @@ impl Executor {
 
         if has_invalid {
             return Err(ApplyError::InvalidPlan(
-                "Plan has INVALID operations (missing source, path outside scope, etc.)".to_string(),
+                "Plan has INVALID operations (missing source, path outside scope, etc.)"
+                    .to_string(),
             ));
         }
 
         if has_conflicts {
             return Err(ApplyError::InvalidPlan(
-                "Plan has CONFLICT operations (overlapping destinations, circular moves).".to_string(),
+                "Plan has CONFLICT operations (overlapping destinations, circular moves)."
+                    .to_string(),
             ));
         }
 
         if has_blocked && !force {
             return Err(ApplyError::InvalidPlan(
-                "Plan has BLOCKED operations (constraint violations). Use --force to override.".to_string(),
+                "Plan has BLOCKED operations (constraint violations). Use --force to override."
+                    .to_string(),
             ));
         }
 
@@ -282,7 +291,9 @@ impl Executor {
                     .unwrap_or(false);
                 if validated {
                     (
-                        ExecutionStatus::Skipped("Blocked by constraint (force override)".to_string()),
+                        ExecutionStatus::Skipped(
+                            "Blocked by constraint (force override)".to_string(),
+                        ),
                         Some(now_secs()),
                         Some("Skipped due to constraint block with --force".to_string()),
                         false,
@@ -372,12 +383,7 @@ impl Executor {
                 }
 
                 match std::fs::rename(source, dest) {
-                    Ok(()) => (
-                        ExecutionStatus::Success,
-                        Some(now_secs()),
-                        None,
-                        true,
-                    ),
+                    Ok(()) => (ExecutionStatus::Success, Some(now_secs()), None, true),
                     Err(e) => {
                         let msg = format!("Rename failed: {}", e);
                         (
@@ -401,12 +407,7 @@ impl Executor {
                 }
 
                 match std::fs::create_dir_all(path) {
-                    Ok(()) => (
-                        ExecutionStatus::Success,
-                        Some(now_secs()),
-                        None,
-                        true,
-                    ),
+                    Ok(()) => (ExecutionStatus::Success, Some(now_secs()), None, true),
                     Err(e) => {
                         let msg = format!("CreateDir failed: {}", e);
                         (
@@ -511,8 +512,7 @@ impl Executor {
                         let parent = dest.parent().unwrap_or(dest);
                         if !parent.exists() {
                             if let Err(e) = std::fs::create_dir_all(parent) {
-                                let msg =
-                                    format!("Failed to create parent for undo: {}", e);
+                                let msg = format!("Failed to create parent for undo: {}", e);
                                 applied_undoes.push(UndoLogEntry {
                                     entry_id: entry.id.clone(),
                                     operation_type,
@@ -555,10 +555,7 @@ impl Executor {
                 None => {
                     conflicts.push(UndoConflict::NotUndoable {
                         operation_type: entry.operation_type.clone(),
-                        message: format!(
-                            "Operation {} has unsupported type for undo",
-                            entry.id
-                        ),
+                        message: format!("Operation {} has unsupported type for undo", entry.id),
                     });
                 }
             }
@@ -567,10 +564,7 @@ impl Executor {
         for entry in log.undo_unsupported_entries() {
             conflicts.push(UndoConflict::NotUndoable {
                 operation_type: entry.operation_type.clone(),
-                message: format!(
-                    "Operation {} cannot be undone (delete operation)",
-                    entry.id
-                ),
+                message: format!("Operation {} cannot be undone (delete operation)", entry.id),
             });
         }
 
@@ -606,10 +600,7 @@ impl Executor {
         }
     }
 
-    fn generate_undo_operation(
-        &self,
-        entry: &LogEntry,
-    ) -> Option<(FileSystemOperation, String)> {
+    fn generate_undo_operation(&self, entry: &LogEntry) -> Option<(FileSystemOperation, String)> {
         match entry.operation_type.as_str() {
             "move" => Some((
                 FileSystemOperation::Move {

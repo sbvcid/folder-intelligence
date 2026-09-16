@@ -1,5 +1,5 @@
-use crate::agent::intent::{Goal, TaskIntent};
 use crate::agent::analysis::TaskAnalysis;
+use crate::agent::intent::{Goal, TaskIntent};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -69,7 +69,10 @@ impl ProposedOperation {
             ProposedOperation::PreserveDirectory { path } => {
                 format!("Preserve existing directory: {}", path.display())
             }
-            ProposedOperation::ArchiveFiles { category, file_count } => {
+            ProposedOperation::ArchiveFiles {
+                category,
+                file_count,
+            } => {
                 format!("Archive {} files under {}", file_count, category)
             }
             ProposedOperation::LeaveUnclassified { file_count, reason } => {
@@ -230,10 +233,7 @@ impl RecommendationEngine {
         Ok(())
     }
 
-    fn determine_strategy(
-        &self,
-        intent: &TaskIntent,
-    ) -> RecommendationStrategy {
+    fn determine_strategy(&self, intent: &TaskIntent) -> RecommendationStrategy {
         match &intent.goal {
             Goal::Organize { purpose, .. } => match purpose.as_str() {
                 "by_category" | "by_type" => RecommendationStrategy::CategoryBased,
@@ -295,9 +295,14 @@ impl RecommendationEngine {
                 crate::agent::analysis::ContentType::Other => "misc_storage".to_string(),
             };
 
-            let target_path = analysis.candidate_categories.iter().find(|c| {
-                c.name.to_lowercase().contains(&purpose) || c.name.to_lowercase().contains(&group.extension)
-            }).map(|c| c.path.clone());
+            let target_path = analysis
+                .candidate_categories
+                .iter()
+                .find(|c| {
+                    c.name.to_lowercase().contains(&purpose)
+                        || c.name.to_lowercase().contains(&group.extension)
+                })
+                .map(|c| c.path.clone());
 
             let is_existing = target_path.is_some();
 
@@ -342,7 +347,9 @@ impl RecommendationEngine {
                 crate::agent::analysis::ContentType::Other => "misc_storage",
             };
 
-            let has_existing = proposed_categories.iter().any(|c| c.name == category_name && c.is_existing);
+            let has_existing = proposed_categories
+                .iter()
+                .any(|c| c.name == category_name && c.is_existing);
 
             if !has_existing {
                 operations.push(ProposedOperation::CreateCategory {
@@ -361,7 +368,10 @@ impl RecommendationEngine {
 
         for candidate in &analysis.candidate_categories {
             let is_preserved = proposed_categories.iter().any(|c| {
-                c.target_path.as_ref().map(|p| p == &candidate.path).unwrap_or(false)
+                c.target_path
+                    .as_ref()
+                    .map(|p| p == &candidate.path)
+                    .unwrap_or(false)
             });
             if is_preserved {
                 operations.push(ProposedOperation::PreserveDirectory {
@@ -400,7 +410,9 @@ impl RecommendationEngine {
         let leftover_count: u64 = analysis
             .classification_results
             .iter()
-            .filter(|r| r.decision == crate::classification::ClassificationDecision::LeaveUnclassified)
+            .filter(|r| {
+                r.decision == crate::classification::ClassificationDecision::LeaveUnclassified
+            })
             .map(|_r| {
                 analysis
                     .content_groups
@@ -436,7 +448,10 @@ impl RecommendationEngine {
 
         checks.push(ConstraintCheck {
             name: "preserve_existing_folders".to_string(),
-            passed: preserve || !operations.iter().any(|op| matches!(op, ProposedOperation::PreserveDirectory { .. })),
+            passed: preserve
+                || !operations
+                    .iter()
+                    .any(|op| matches!(op, ProposedOperation::PreserveDirectory { .. })),
             message: if preserve {
                 "Existing directories will be preserved".to_string()
             } else {
@@ -446,13 +461,14 @@ impl RecommendationEngine {
 
         checks.push(ConstraintCheck {
             name: "auto_delete_temps".to_string(),
-            passed: auto_delete || !operations.iter().any(|op| {
-                if let ProposedOperation::ArchiveFiles { category, .. } = op {
-                    category.contains("temp")
-                } else {
-                    false
-                }
-            }),
+            passed: auto_delete
+                || !operations.iter().any(|op| {
+                    if let ProposedOperation::ArchiveFiles { category, .. } = op {
+                        category.contains("temp")
+                    } else {
+                        false
+                    }
+                }),
             message: if auto_delete {
                 "Temp file handling permitted by constraint".to_string()
             } else {
@@ -472,13 +488,14 @@ impl RecommendationEngine {
 
         checks.push(ConstraintCheck {
             name: "archive_old_files".to_string(),
-            passed: archive || !operations.iter().any(|op| {
-                if let ProposedOperation::ArchiveFiles { category, .. } = op {
-                    category.starts_with("files_older_than_")
-                } else {
-                    false
-                }
-            }),
+            passed: archive
+                || !operations.iter().any(|op| {
+                    if let ProposedOperation::ArchiveFiles { category, .. } = op {
+                        category.starts_with("files_older_than_")
+                    } else {
+                        false
+                    }
+                }),
             message: if archive {
                 "Old file archiving enabled".to_string()
             } else {
@@ -554,40 +571,45 @@ impl RecommendationEngine {
                 idx += 1;
                 let question_id = format!("q{}", idx);
                 let (question_text, options) = match gap.gap_type {
-                    crate::agent::analysis::GapType::Taxonomy => {
-                        ("What category structure do you prefer?".to_string(), vec![
+                    crate::agent::analysis::GapType::Taxonomy => (
+                        "What category structure do you prefer?".to_string(),
+                        vec![
                             "By file type".to_string(),
                             "By project".to_string(),
                             "By date".to_string(),
-                        ])
-                    }
-                    crate::agent::analysis::GapType::FileDisposition => {
-                        ("How should unclassified files be handled?".to_string(), vec![
+                        ],
+                    ),
+                    crate::agent::analysis::GapType::FileDisposition => (
+                        "How should unclassified files be handled?".to_string(),
+                        vec![
                             "Leave in place".to_string(),
                             "Move to 'misc' folder".to_string(),
                             "Archive".to_string(),
-                        ])
-                    }
-                    crate::agent::analysis::GapType::DuplicateHandling => {
-                        ("How should duplicate files be handled?".to_string(), vec![
+                        ],
+                    ),
+                    crate::agent::analysis::GapType::DuplicateHandling => (
+                        "How should duplicate files be handled?".to_string(),
+                        vec![
                             "Keep newer".to_string(),
                             "Keep larger".to_string(),
                             "Merge if identical".to_string(),
-                        ])
-                    }
-                    crate::agent::analysis::GapType::ArchivePolicy => {
-                        ("What is your archive policy for old files?".to_string(), vec![
+                        ],
+                    ),
+                    crate::agent::analysis::GapType::ArchivePolicy => (
+                        "What is your archive policy for old files?".to_string(),
+                        vec![
                             "Archive after 90 days".to_string(),
                             "Archive after 1 year".to_string(),
                             "Do not archive".to_string(),
-                        ])
-                    }
-                    crate::agent::analysis::GapType::ScopeBoundary => {
-                        ("Should the scope include subdirectories?".to_string(), vec![
+                        ],
+                    ),
+                    crate::agent::analysis::GapType::ScopeBoundary => (
+                        "Should the scope include subdirectories?".to_string(),
+                        vec![
                             "Yes, include all".to_string(),
                             "No, top-level only".to_string(),
-                        ])
-                    }
+                        ],
+                    ),
                 };
 
                 questions.push(ClarificationQuestion {
@@ -676,7 +698,13 @@ impl RecommendationEngine {
         let classified_files: u64 = analysis
             .classification_results
             .iter()
-            .filter(|r| matches!(r.decision, crate::classification::ClassificationDecision::MoveExisting | crate::classification::ClassificationDecision::CreateCategory))
+            .filter(|r| {
+                matches!(
+                    r.decision,
+                    crate::classification::ClassificationDecision::MoveExisting
+                        | crate::classification::ClassificationDecision::CreateCategory
+                )
+            })
             .count() as u64;
 
         let mut confidence = if total_files > 0 {
@@ -754,9 +782,17 @@ impl RecommendationEngine {
             strategy_name,
             purpose,
             num_categories,
-            analysis.classification_results.iter()
-                .filter(|r| matches!(r.decision, crate::classification::ClassificationDecision::MoveExisting | crate::classification::ClassificationDecision::CreateCategory))
-                .count() as f64 / total_files.max(1) as f64 * 100.0,
+            analysis
+                .classification_results
+                .iter()
+                .filter(|r| matches!(
+                    r.decision,
+                    crate::classification::ClassificationDecision::MoveExisting
+                        | crate::classification::ClassificationDecision::CreateCategory
+                ))
+                .count() as f64
+                / total_files.max(1) as f64
+                * 100.0,
             analysis.ambiguities.len(),
             analysis.evidence_gaps.len(),
         )

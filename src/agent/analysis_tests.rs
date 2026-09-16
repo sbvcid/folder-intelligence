@@ -1,8 +1,8 @@
 use super::*;
 use crate::agent::intent::TaskIntentParser;
 use crate::agent::Goal;
-use tempfile::tempdir;
 use std::fs;
+use tempfile::tempdir;
 
 fn create_test_scope(dir: &tempfile::TempDir) -> PathBuf {
     let scope = dir.path().join("downloads");
@@ -76,12 +76,19 @@ fn test_content_grouping() {
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     // Should have at least Documents and Other content group
-    let has_documents = analysis.content_groups.iter()
+    let has_documents = analysis
+        .content_groups
+        .iter()
         .any(|g| g.category == ContentType::Documents);
-    let has_other = analysis.content_groups.iter()
+    let has_other = analysis
+        .content_groups
+        .iter()
         .any(|g| g.category == ContentType::Other);
 
-    assert!(has_documents || has_other, "Expected at least Documents or Other content group");
+    assert!(
+        has_documents || has_other,
+        "Expected at least Documents or Other content group"
+    );
 
     for group in &analysis.content_groups {
         assert!(group.file_count > 0);
@@ -110,9 +117,7 @@ fn test_analysis_serialization() {
 #[test]
 fn test_analyze_nonexistent_scope() {
     let parser = TaskIntentParser::new(PathBuf::from("/nonexistent/path/12345"));
-    let intent = parser
-        .parse("Organize this folder")
-        .expect("should parse");
+    let intent = parser.parse("Organize this folder").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let result = analyzer.analyze(&intent);
@@ -146,15 +151,16 @@ fn test_evidence_gaps_identified() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize downloads")
-        .expect("should parse");
+    let intent = parser.parse("Organize downloads").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     // "Organize downloads" without specifying purpose → taxonomy gap
-    assert!(analysis.evidence_gaps.iter().any(|g| matches!(g.gap_type, GapType::Taxonomy)));
+    assert!(analysis
+        .evidence_gaps
+        .iter()
+        .any(|g| matches!(g.gap_type, GapType::Taxonomy)));
 }
 
 #[test]
@@ -163,15 +169,17 @@ fn test_candidate_categories_found() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize by category")
-        .expect("should parse");
+    let intent = parser.parse("Organize by category").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     // Should find "documents" and "images" subdirectories as candidates
-    let names: Vec<_> = analysis.candidate_categories.iter().map(|c| c.name.as_str()).collect();
+    let names: Vec<_> = analysis
+        .candidate_categories
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
     assert!(names.contains(&"documents"));
     assert!(names.contains(&"images"));
 }
@@ -182,9 +190,7 @@ fn test_ambiguities_detected() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize by category")
-        .expect("should parse");
+    let intent = parser.parse("Organize by category").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");

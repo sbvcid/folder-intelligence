@@ -95,9 +95,12 @@ Output ONLY valid JSON matching the ClassificationResult schema. No prose, no ma
 }
 
 fn build_user_prompt(request: &AiClassificationRequest) -> String {
-    let target_json = serde_json::to_string_pretty(&request.target_evidence).unwrap_or_else(|_| "{}".to_string());
-    let candidates_json = serde_json::to_string_pretty(&request.candidates).unwrap_or_else(|_| "[]".to_string());
-    let baseline_json = serde_json::to_string_pretty(&request.rule_based_result).unwrap_or_else(|_| "{}".to_string());
+    let target_json =
+        serde_json::to_string_pretty(&request.target_evidence).unwrap_or_else(|_| "{}".to_string());
+    let candidates_json =
+        serde_json::to_string_pretty(&request.candidates).unwrap_or_else(|_| "[]".to_string());
+    let baseline_json = serde_json::to_string_pretty(&request.rule_based_result)
+        .unwrap_or_else(|_| "{}".to_string());
 
     format!(
         r#"Here is the classification input:
@@ -128,7 +131,8 @@ Output JSON:"#,
         candidates_json = candidates_json,
         baseline_json = baseline_json,
         delta = request.constraints.max_confidence_delta,
-        decisions = serde_json::to_string(&request.constraints.allowed_decisions).unwrap_or_default(),
+        decisions =
+            serde_json::to_string(&request.constraints.allowed_decisions).unwrap_or_default(),
     )
 }
 
@@ -216,7 +220,9 @@ impl OpenAiProvider {
             let http_client = reqwest::blocking::Client::builder()
                 .timeout(self.config.timeout)
                 .build()
-                .map_err(|e| AiClassificationError::ProviderError(format!("HTTP client error: {}", e)))?;
+                .map_err(|e| {
+                    AiClassificationError::ProviderError(format!("HTTP client error: {}", e))
+                })?;
 
             let response = http_client
                 .post(&self.config.base_url)
@@ -252,19 +258,23 @@ impl OpenAiProvider {
                 return Err(AiClassificationError::ProviderError(msg));
             }
 
-            let chat_response: OpenAiChatResponse = serde_json::from_str(&body)
-                .map_err(|e| AiClassificationError::InvalidResponse(format!("Response parse error: {}", e)))?;
+            let chat_response: OpenAiChatResponse = serde_json::from_str(&body).map_err(|e| {
+                AiClassificationError::InvalidResponse(format!("Response parse error: {}", e))
+            })?;
 
             let content = chat_response
                 .choices
                 .first()
-                .ok_or_else(|| AiClassificationError::InvalidResponse("No choices in response".to_string()))?
+                .ok_or_else(|| {
+                    AiClassificationError::InvalidResponse("No choices in response".to_string())
+                })?
                 .message
                 .content
                 .clone();
 
-            let result: ClassificationResult = serde_json::from_str(&content)
-                .map_err(|e| AiClassificationError::InvalidResponse(format!("JSON deserialize error: {}", e)))?;
+            let result: ClassificationResult = serde_json::from_str(&content).map_err(|e| {
+                AiClassificationError::InvalidResponse(format!("JSON deserialize error: {}", e))
+            })?;
 
             Ok(result)
         }

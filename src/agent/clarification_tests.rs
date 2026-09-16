@@ -1,11 +1,14 @@
 use super::*;
 use crate::agent::intent::TaskIntentParser;
-use crate::agent::{EvidenceAnalyzer, ConstraintSet, Goal, TaskIntent, DecisionCategory, DecisionAnswer, UserDecision, ClarificationEngine, ClarificationError};
 use crate::agent::recommendation::{RecommendationEngine, RecommendationStrategy};
-use tempfile::tempdir;
+use crate::agent::{
+    ClarificationEngine, ClarificationError, DecisionAnswer, DecisionCategory, EvidenceAnalyzer,
+    Goal, UserDecision,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
+use tempfile::tempdir;
 
 fn create_test_scope(dir: &tempfile::TempDir) -> PathBuf {
     let scope = dir.path().join("downloads");
@@ -30,15 +33,15 @@ fn test_clarification_start_returns_questions() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize this folder")
-        .expect("should parse");
+    let intent = parser.parse("Organize this folder").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine::default();
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let clarifier = ClarificationEngine;
     let questions = clarifier.start(&recommendation);
@@ -86,14 +89,12 @@ fn test_apply_preserve_existing_folders() {
     assert!(!intent.constraints.preserve_existing_folders); // default is false for "by category"
 
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::PreserveExistingFolders,
-            answer: DecisionAnswer::Yes,
-            question_id: "q1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::PreserveExistingFolders,
+        answer: DecisionAnswer::Yes,
+        question_id: "q1".to_string(),
+        rationale: None,
+    }];
 
     let updated = clarifier.apply_decisions(&intent, &decisions);
     assert!(updated.constraints.preserve_existing_folders);
@@ -112,14 +113,12 @@ fn test_apply_auto_delete_temps() {
     assert!(!intent.constraints.auto_delete_temps);
 
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::AutoDeleteTemps,
-            answer: DecisionAnswer::Yes,
-            question_id: "q1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::AutoDeleteTemps,
+        answer: DecisionAnswer::Yes,
+        question_id: "q1".to_string(),
+        rationale: None,
+    }];
 
     let updated = clarifier.apply_decisions(&intent, &decisions);
     assert!(updated.constraints.auto_delete_temps);
@@ -136,14 +135,12 @@ fn test_apply_no_auto_delete_temps() {
         .expect("should parse");
 
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::AutoDeleteTemps,
-            answer: DecisionAnswer::No,
-            question_id: "q1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::AutoDeleteTemps,
+        answer: DecisionAnswer::No,
+        question_id: "q1".to_string(),
+        rationale: None,
+    }];
 
     let updated = clarifier.apply_decisions(&intent, &decisions);
     assert!(!updated.constraints.auto_delete_temps);
@@ -162,18 +159,19 @@ fn test_apply_archive_old_duration() {
     assert!(intent.constraints.archive_old.is_none());
 
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::ArchiveOld,
-            answer: DecisionAnswer::Duration(Duration::from_secs(90 * 86400)),
-            question_id: "q1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::ArchiveOld,
+        answer: DecisionAnswer::Duration(Duration::from_secs(90 * 86400)),
+        question_id: "q1".to_string(),
+        rationale: None,
+    }];
 
     let updated = clarifier.apply_decisions(&intent, &decisions);
     assert!(updated.constraints.archive_old.is_some());
-    assert_eq!(updated.constraints.archive_old.unwrap().as_secs(), 90 * 86400);
+    assert_eq!(
+        updated.constraints.archive_old.unwrap().as_secs(),
+        90 * 86400
+    );
 }
 
 #[test]
@@ -182,19 +180,15 @@ fn test_apply_taxonomy_choice() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize this folder")
-        .expect("should parse");
+    let intent = parser.parse("Organize this folder").expect("should parse");
 
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::TaxonomyChoice,
-            answer: DecisionAnswer::Choice("by_project".to_string()),
-            question_id: "q1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::TaxonomyChoice,
+        answer: DecisionAnswer::Choice("by_project".to_string()),
+        question_id: "q1".to_string(),
+        rationale: None,
+    }];
 
     let updated = clarifier.apply_decisions(&intent, &decisions);
 
@@ -238,11 +232,7 @@ fn test_resolve_question_valid_yes_no() {
     };
 
     let clarifier = ClarificationEngine;
-    let decision = clarifier.resolve_question(
-        &[question],
-        "q1",
-        DecisionAnswer::Yes,
-    );
+    let decision = clarifier.resolve_question(&[question], "q1", DecisionAnswer::Yes);
 
     assert!(decision.is_ok());
     let d = decision.unwrap();
@@ -266,19 +256,21 @@ fn test_resolve_question_invalid_choice() {
         DecisionAnswer::Choice("invalid_option".to_string()),
     );
 
-    assert!(matches!(decision, Err(ClarificationError::InvalidAnswer(_))));
+    assert!(matches!(
+        decision,
+        Err(ClarificationError::InvalidAnswer(_))
+    ));
 }
 
 #[test]
 fn test_resolve_question_not_found() {
     let clarifier = ClarificationEngine;
-    let decision = clarifier.resolve_question(
-        &[],
-        "nonexistent",
-        DecisionAnswer::Yes,
-    );
+    let decision = clarifier.resolve_question(&[], "nonexistent", DecisionAnswer::Yes);
 
-    assert!(matches!(decision, Err(ClarificationError::QuestionNotFound(_))));
+    assert!(matches!(
+        decision,
+        Err(ClarificationError::QuestionNotFound(_))
+    ));
 }
 
 #[test]
@@ -291,14 +283,13 @@ fn test_resolve_question_yes_no_for_non_constraint() {
     };
 
     let clarifier = ClarificationEngine;
-    let decision = clarifier.resolve_question(
-        &[question],
-        "q1",
-        DecisionAnswer::Yes,
-    );
+    let decision = clarifier.resolve_question(&[question], "q1", DecisionAnswer::Yes);
 
     // TaxonomyChoice doesn't map to a constraint, so Yes/No is invalid
-    assert!(matches!(decision, Err(ClarificationError::InvalidAnswer(_))));
+    assert!(matches!(
+        decision,
+        Err(ClarificationError::InvalidAnswer(_))
+    ));
 }
 
 #[test]
@@ -307,29 +298,27 @@ fn test_recompute_recommendation_after_decision() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize this folder")
-        .expect("should parse");
+    let intent = parser.parse("Organize this folder").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine::default();
-    let initial_rec = engine.recommend(&intent, &analysis).expect("should recommend");
+    let initial_rec = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     // Initially has questions
     assert!(!initial_rec.unresolved_questions.is_empty());
 
     // Apply a decision to specify taxonomy
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::TaxonomyChoice,
-            answer: DecisionAnswer::Choice("by_category".to_string()),
-            question_id: "gap-1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::TaxonomyChoice,
+        answer: DecisionAnswer::Choice("by_category".to_string()),
+        question_id: "gap-1".to_string(),
+        rationale: None,
+    }];
 
     let updated_intent = clarifier.apply_decisions(&intent, &decisions);
     let updated_rec = clarifier.recompute_recommendation(&updated_intent, &analysis);
@@ -360,7 +349,9 @@ fn test_blocked_operations_visible() {
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine::default();
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let clarifier = ClarificationEngine;
     let blocked = clarifier.blocked_operations(&recommendation);
@@ -385,7 +376,9 @@ fn test_summarize_output() {
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine::default();
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let clarifier = ClarificationEngine;
     let summary = clarifier.summarize(&recommendation);
@@ -473,10 +466,7 @@ fn test_decision_category_maps_to_constraint() {
         DecisionCategory::ArchiveOld.maps_to_constraint(),
         Some("archive_old")
     );
-    assert_eq!(
-        DecisionCategory::TaxonomyChoice.maps_to_constraint(),
-        None
-    );
+    assert_eq!(DecisionCategory::TaxonomyChoice.maps_to_constraint(), None);
 }
 
 #[test]
@@ -530,19 +520,20 @@ fn test_apply_decisions_does_not_modify_original() {
     let original_preserve = intent.constraints.preserve_existing_folders;
 
     let clarifier = ClarificationEngine;
-    let decisions = vec![
-        UserDecision {
-            category: DecisionCategory::PreserveExistingFolders,
-            answer: DecisionAnswer::Yes,
-            question_id: "q1".to_string(),
-            rationale: None,
-        },
-    ];
+    let decisions = vec![UserDecision {
+        category: DecisionCategory::PreserveExistingFolders,
+        answer: DecisionAnswer::Yes,
+        question_id: "q1".to_string(),
+        rationale: None,
+    }];
 
     let _updated = clarifier.apply_decisions(&intent, &decisions);
 
     // Original intent should not be modified
-    assert_eq!(intent.constraints.preserve_existing_folders, original_preserve);
+    assert_eq!(
+        intent.constraints.preserve_existing_folders,
+        original_preserve
+    );
 }
 
 #[test]
@@ -585,11 +576,9 @@ fn test_infer_category_from_question() {
     };
 
     let clarifier = ClarificationEngine;
-    let decision = clarifier.resolve_question(
-        &[question],
-        "q1",
-        DecisionAnswer::Yes,
-    ).unwrap();
+    let decision = clarifier
+        .resolve_question(&[question], "q1", DecisionAnswer::Yes)
+        .unwrap();
 
     assert_eq!(decision.category, DecisionCategory::PreserveExistingFolders);
 }
@@ -604,11 +593,13 @@ fn test_infer_duplicate_category() {
     };
 
     let clarifier = ClarificationEngine;
-    let decision = clarifier.resolve_question(
-        &[question],
-        "q1",
-        DecisionAnswer::Choice("Merge".to_string()),
-    ).unwrap();
+    let decision = clarifier
+        .resolve_question(
+            &[question],
+            "q1",
+            DecisionAnswer::Choice("Merge".to_string()),
+        )
+        .unwrap();
 
     assert_eq!(decision.category, DecisionCategory::DuplicateHandling);
 }
@@ -623,11 +614,13 @@ fn test_infer_archive_category() {
     };
 
     let clarifier = ClarificationEngine;
-    let decision = clarifier.resolve_question(
-        &[question],
-        "q1",
-        DecisionAnswer::Choice("90 days".to_string()),
-    ).unwrap();
+    let decision = clarifier
+        .resolve_question(
+            &[question],
+            "q1",
+            DecisionAnswer::Choice("90 days".to_string()),
+        )
+        .unwrap();
 
     assert_eq!(decision.category, DecisionCategory::ArchiveOld);
 }
@@ -638,15 +631,15 @@ fn test_full_clarification_loop() {
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize this folder")
-        .expect("should parse");
+    let intent = parser.parse("Organize this folder").expect("should parse");
 
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
     let engine = RecommendationEngine::default();
-    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
 
     let clarifier = ClarificationEngine;
     let questions = clarifier.start(&recommendation);
@@ -654,11 +647,13 @@ fn test_full_clarification_loop() {
 
     // Answer the first question (taxonomy)
     let first_question = &questions[0];
-    let decision = clarifier.resolve_question(
-        &questions,
-        &first_question.id,
-        DecisionAnswer::Choice(first_question.options[0].clone()),
-    ).expect("should resolve");
+    let decision = clarifier
+        .resolve_question(
+            &questions,
+            &first_question.id,
+            DecisionAnswer::Choice(first_question.options[0].clone()),
+        )
+        .expect("should resolve");
 
     let decisions = vec![decision];
     let updated_intent = clarifier.apply_decisions(&intent, &decisions);

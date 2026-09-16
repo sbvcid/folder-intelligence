@@ -1,27 +1,18 @@
-use crate::agent::analysis::{TaskAnalysis, ContentType};
-use crate::agent::recommendation::{
-    ProposedOperation, Recommendation,
-};
+use crate::agent::analysis::{ContentType, TaskAnalysis};
 use crate::agent::clarification::UserDecision;
+use crate::agent::intent::ConstraintSet;
+use crate::agent::recommendation::{ProposedOperation, Recommendation};
 use crate::evidence::DirectoryEvidence;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FileSystemOperation {
-    Move {
-        source: PathBuf,
-        dest: PathBuf,
-    },
-    CreateDir {
-        path: PathBuf,
-    },
-    Delete {
-        path: PathBuf,
-        reason: String,
-    },
+    Move { source: PathBuf, dest: PathBuf },
+    CreateDir { path: PathBuf },
+    Delete { path: PathBuf, reason: String },
 }
 
 impl FileSystemOperation {
@@ -104,6 +95,22 @@ impl std::fmt::Display for WarningType {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct PlanValidationContext {
+    pub preserve_existing_folders: bool,
+    pub auto_delete_temps: bool,
+}
+
+impl From<&ConstraintSet> for PlanValidationContext {
+    fn from(constraints: &ConstraintSet) -> Self {
+        PlanValidationContext {
+            preserve_existing_folders: constraints.preserve_existing_folders,
+            auto_delete_temps: constraints.auto_delete_temps,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub struct OperationPlan {
@@ -116,6 +123,8 @@ pub struct OperationPlan {
     pub has_conflicts: bool,
     pub dry_run: bool,
     pub created_at: u64,
+    #[serde(default)]
+    pub validation_context: Option<PlanValidationContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,9 +142,16 @@ impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PlanError::SourcePathNotFound(p) => write!(f, "Source path not found: {}", p.display()),
-            PlanError::DestinationOutsideScope(p) => write!(f, "Destination outside scope: {}", p.display()),
+            PlanError::DestinationOutsideScope(p) => {
+                write!(f, "Destination outside scope: {}", p.display())
+            }
             PlanError::SourceEqualsDestination { source, dest } => {
-                write!(f, "Source equals destination: {} == {}", source.display(), dest.display())
+                write!(
+                    f,
+                    "Source equals destination: {} == {}",
+                    source.display(),
+                    dest.display()
+                )
             }
             PlanError::ConflictingOperations(msg) => write!(f, "Conflicting operations: {}", msg),
             PlanError::InvalidCategory(name) => write!(f, "Invalid category: {}", name),
@@ -160,7 +176,8 @@ impl PlanGenerator {
         recommendation: &Recommendation,
         analysis: &TaskAnalysis,
         _decisions: &[UserDecision],
-    ) -> Result<OperationPlan, PlanError> {        let scope = analysis.scope_evidence.path.clone();
+    ) -> Result<OperationPlan, PlanError> {
+        let scope = analysis.scope_evidence.path.clone();
         let mut operations: Vec<FileSystemOperation> = Vec::new();
         let mut warnings: Vec<ValidationWarning> = Vec::new();
         let mut estimated = EstimatedImpact {
@@ -176,15 +193,25 @@ impl PlanGenerator {
         for op in &recommendation.proposed_operations {
             match op {
                 ProposedOperation::CreateCategory { name, .. } => {
-                    let dest = self.resolve_category_dir(&scope, &analysis.candidate_categories, name);
+                    let dest =
+                        self.resolve_category_dir(&scope, &analysis.candidate_categories, name);
                     if !created_dirs.contains(&dest) && !dest.exists() {
                         operations.push(FileSystemOperation::CreateDir { path: dest.clone() });
                         estimated.dirs_created += 1;
                         created_dirs.insert(dest.clone());
                     }
                 }
-                ProposedOperation::MoveCategory { to_category, content_type, file_count, .. } => {
-                    let dest = self.resolve_category_dir(&scope, &analysis.candidate_categories, to_category);
+                ProposedOperation::MoveCategory {
+                    to_category,
+                    content_type,
+                    file_count,
+                    ..
+                } => {
+                    let dest = self.resolve_category_dir(
+                        &scope,
+                        &analysis.candidate_categories,
+                        to_category,
+                    );
                     if !created_dirs.contains(&dest) && !dest.exists() {
                         operations.push(FileSystemOperation::CreateDir { path: dest.clone() });
                         estimated.dirs_created += 1;
@@ -212,7 +239,10 @@ impl PlanGenerator {
                     let moved_len = moved.len();
 
                     operations.extend(moved.into_iter().map(|(source, _size)| {
-                        FileSystemOperation::Move { source, dest: dest.clone() }
+                        FileSystemOperation::Move {
+                            source,
+                            dest: dest.clone(),
+                        }
                     }));
 
                     estimated.files_moved += moved_len as u64;
@@ -220,10 +250,15 @@ impl PlanGenerator {
                 ProposedOperation::PreserveDirectory { path } => {
                     created_dirs.insert(path.clone());
                 }
-                ProposedOperation::ArchiveFiles { category, file_count: _ } => {
+                ProposedOperation::ArchiveFiles {
+                    category,
+                    file_count: _,
+                } => {
                     let archive_dir = scope.join("archive");
                     if !created_dirs.contains(&archive_dir) && !archive_dir.exists() {
-                        operations.push(FileSystemOperation::CreateDir { path: archive_dir.clone() });
+                        operations.push(FileSystemOperation::CreateDir {
+                            path: archive_dir.clone(),
+                        });
                         estimated.dirs_created += 1;
                         created_dirs.insert(archive_dir.clone());
                     }
@@ -231,7 +266,9 @@ impl PlanGenerator {
                     let archive_pattern = category;
                     let archive_dest = scope.join("archive").join(archive_pattern);
                     if !archive_dest.exists() {
-                        operations.push(FileSystemOperation::CreateDir { path: archive_dest.clone() });
+                        operations.push(FileSystemOperation::CreateDir {
+                            path: archive_dest.clone(),
+                        });
                         estimated.dirs_created += 1;
                         created_dirs.insert(archive_dest.clone());
                     }
@@ -241,7 +278,10 @@ impl PlanGenerator {
                         dest: archive_dest,
                     });
                 }
-                ProposedOperation::LeaveUnclassified { file_count: _, reason: _ } => {
+                ProposedOperation::LeaveUnclassified {
+                    file_count: _,
+                    reason: _,
+                } => {
                     // No operations for files left unclassified
                 }
             }
@@ -278,14 +318,11 @@ impl PlanGenerator {
             has_conflicts,
             dry_run: true,
             created_at,
+            validation_context: None,
         })
     }
 
-    fn collect_existing_dirs(
-        &self,
-        scope: &Path,
-        analysis: &TaskAnalysis,
-    ) -> HashSet<PathBuf> {
+    fn collect_existing_dirs(&self, scope: &Path, analysis: &TaskAnalysis) -> HashSet<PathBuf> {
         let mut dirs = HashSet::new();
         dirs.insert(scope.to_path_buf());
         for candidate in &analysis.candidate_categories {
@@ -321,7 +358,8 @@ impl PlanGenerator {
             "misc_storage" => "Misc",
             "temp_files" => "Temp",
             _ => category,
-        }.to_string()
+        }
+        .to_string()
     }
 
     fn parse_content_type(&self, content_type: &str) -> ContentType {
@@ -350,11 +388,7 @@ impl PlanGenerator {
         let target_exts = self.content_type_extensions(content_type);
 
         for filename in &evidence.notable_filenames {
-            let ext = filename
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_lowercase();
+            let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
 
             if target_exts.contains(&ext.as_str()) {
                 let source = scope.join(filename);
@@ -376,7 +410,8 @@ impl PlanGenerator {
                 warning_type: WarningType::FileCountEstimate,
                 message: format!(
                     "Only {} of {} expected files found (partial scan)",
-                    results.len(), expected_count
+                    results.len(),
+                    expected_count
                 ),
             });
         }
@@ -386,11 +421,17 @@ impl PlanGenerator {
 
     fn content_type_extensions(&self, ct: &ContentType) -> Vec<&'static str> {
         match ct {
-            ContentType::Documents => vec!["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf"],
-            ContentType::Images => vec!["jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "ico"],
+            ContentType::Documents => vec![
+                "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf",
+            ],
+            ContentType::Images => vec![
+                "jpg", "jpeg", "png", "gif", "bmp", "tiff", "webp", "svg", "ico",
+            ],
             ContentType::Archives => vec!["zip", "rar", "7z", "tar", "gz", "bz2", "xz"],
             ContentType::Media => vec!["mp4", "avi", "mkv", "mov", "mp3", "wav", "flac"],
-            ContentType::Code => vec!["py", "js", "ts", "rs", "go", "java", "c", "cpp", "h", "sh", "rb", "php"],
+            ContentType::Code => vec![
+                "py", "js", "ts", "rs", "go", "java", "c", "cpp", "h", "sh", "rb", "php",
+            ],
             ContentType::Installers => vec!["exe", "msi", "dmg", "pkg", "deb", "rpm"],
             ContentType::Data => vec!["db", "sqlite", "dat", "bin"],
             ContentType::Config => vec!["conf", "cfg", "ini", "env", "properties"],
@@ -454,7 +495,10 @@ impl PlanGenerator {
         let mut preview = String::new();
         preview.push_str(&format!("Operation Plan: {}\n", plan.id));
         preview.push_str(&format!("Scope: {}\n", plan.scope.display()));
-        preview.push_str(&format!("Dry run: {}\n", if plan.dry_run { "Yes" } else { "No" }));
+        preview.push_str(&format!(
+            "Dry run: {}\n",
+            if plan.dry_run { "Yes" } else { "No" }
+        ));
         preview.push('\n');
 
         if plan.operations.is_empty() {
@@ -488,10 +532,22 @@ impl PlanGenerator {
 
         preview.push('\n');
         preview.push_str("=== Estimated Impact ===\n");
-        preview.push_str(&format!("  Files moved: {}\n", plan.estimated_impact.files_moved));
-        preview.push_str(&format!("  Dirs created: {}\n", plan.estimated_impact.dirs_created));
-        preview.push_str(&format!("  Dirs affected: {}\n", plan.estimated_impact.dirs_affected));
-        preview.push_str(&format!("  Total bytes: {}\n", plan.estimated_impact.total_bytes));
+        preview.push_str(&format!(
+            "  Files moved: {}\n",
+            plan.estimated_impact.files_moved
+        ));
+        preview.push_str(&format!(
+            "  Dirs created: {}\n",
+            plan.estimated_impact.dirs_created
+        ));
+        preview.push_str(&format!(
+            "  Dirs affected: {}\n",
+            plan.estimated_impact.dirs_affected
+        ));
+        preview.push_str(&format!(
+            "  Total bytes: {}\n",
+            plan.estimated_impact.total_bytes
+        ));
 
         if plan.has_conflicts {
             preview.push_str("\n⚠️  Warning: Potential conflicts detected\n");

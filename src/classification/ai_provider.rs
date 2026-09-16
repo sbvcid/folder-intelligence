@@ -1,8 +1,8 @@
 use crate::classification::input::ClassificationInput;
 use crate::classification::result::{ClassificationDecision, ClassificationResult};
+use crate::classification::MockAiClassifier;
 #[cfg(feature = "network")]
 use crate::classification::OpenAiProvider;
-use crate::classification::MockAiClassifier;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -107,20 +107,34 @@ pub fn validate_ai_result(
     }
 
     let has_candidate = result.selected_candidate.is_some();
-    if has_candidate && !matches!(result.decision, crate::classification::ClassificationDecision::MoveExisting) {
+    if has_candidate
+        && !matches!(
+            result.decision,
+            crate::classification::ClassificationDecision::MoveExisting
+        )
+    {
         return Err(AiClassificationError::InvalidResponse(
             "selected_candidate set but decision is not MoveExisting".to_string(),
         ));
     }
 
     let no_candidate = result.selected_candidate.is_none();
-    if no_candidate && matches!(result.decision, crate::classification::ClassificationDecision::MoveExisting) {
+    if no_candidate
+        && matches!(
+            result.decision,
+            crate::classification::ClassificationDecision::MoveExisting
+        )
+    {
         return Err(AiClassificationError::InvalidResponse(
             "MoveExisting decision but no selected_candidate".to_string(),
         ));
     }
 
-    if matches!(result.decision, crate::classification::ClassificationDecision::MoveExisting) && !result.warnings.is_empty() {
+    if matches!(
+        result.decision,
+        crate::classification::ClassificationDecision::MoveExisting
+    ) && !result.warnings.is_empty()
+    {
         return Err(AiClassificationError::InvalidResponse(
             "MoveExisting with warnings is not allowed".to_string(),
         ));
