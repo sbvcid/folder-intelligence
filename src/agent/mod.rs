@@ -34,7 +34,7 @@ pub use plan::{
     PlanValidationContext, ValidationWarning, WarningType,
 };
 #[allow(unused_imports)]
-pub use policy::{Policy, PolicyDecision};
+pub use policy::{Approval, Policy, PolicyDecision};
 #[allow(unused_imports)]
 pub use recommendation::{
     ClarificationQuestion, ConstraintCheck, ConstraintViolation, ProposedCategory,

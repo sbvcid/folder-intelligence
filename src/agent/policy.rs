@@ -6,16 +6,22 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum PolicyDecision {
     Approved,
+    RequiresApproval,
     Rejected,
 }
 
 impl PolicyDecision {
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_approved(&self) -> bool {
         matches!(self, PolicyDecision::Approved)
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn is_requires_approval(&self) -> bool {
+        matches!(self, PolicyDecision::RequiresApproval)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn is_rejected(&self) -> bool {
         matches!(self, PolicyDecision::Rejected)
     }
@@ -24,9 +30,9 @@ impl PolicyDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
     pub auto_approve: bool,
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub max_files_moved: Option<u64>,
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub max_directories_created: Option<u64>,
 }
 
@@ -41,30 +47,31 @@ impl Default for Policy {
 }
 
 impl Policy {
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn auto_approve(mut self, enabled: bool) -> Self {
         self.auto_approve = enabled;
         self
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn max_files_moved(mut self, limit: u64) -> Self {
         self.max_files_moved = Some(limit);
         self
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn max_directories_created(mut self, limit: u64) -> Self {
         self.max_directories_created = Some(limit);
         self
     }
 
     pub fn evaluate(&self, plan: &OperationPlan, validation: &ValidationResult) -> PolicyDecision {
+        // Hard rejection conditions (checked first — force cannot bypass these)
         if plan.dry_run {
             return PolicyDecision::Rejected;
         }
@@ -89,20 +96,46 @@ impl Policy {
             }
         }
 
+        // Eligible plans: auto-approve or require explicit approval
         if !self.auto_approve {
-            return PolicyDecision::Rejected;
+            return PolicyDecision::RequiresApproval;
         }
 
         PolicyDecision::Approved
     }
 }
 
+/// An explicit approval bound to a specific plan.
+///
+/// Created after `Policy::evaluate` returns `RequiresApproval`.
+/// The approval is bound to `plan_id` so that an approval for one
+/// plan cannot be used to authorize a different plan.
+///
+/// Approval is NOT persisted by this module — callers that need
+/// persistence wrap this struct themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Approval {
+    pub plan_id: String,
+}
+
+impl Approval {
+    pub fn for_plan(plan: &OperationPlan) -> Self {
+        Approval {
+            plan_id: plan.id.clone(),
+        }
+    }
+
+    /// Verify that this approval matches the given plan's identity.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn verify(&self, plan: &OperationPlan) -> bool {
+        self.plan_id == plan.id
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::plan::{
-        EstimatedImpact, FileSystemOperation, OperationPlan, PlanValidationContext,
-    };
+    use crate::agent::plan::{EstimatedImpact, FileSystemOperation, PlanValidationContext};
     use crate::agent::validate::{ValidatedOperation, ValidationResult, ValidationStatus};
     use std::path::PathBuf;
 
@@ -200,8 +233,45 @@ mod tests {
     }
 
     #[test]
-    fn test_policy_rejects_when_auto_approve_disabled() {
+    fn test_policy_requires_approval_when_auto_disabled() {
         let plan = make_valid_plan();
+        let validation = make_valid_validation();
+        let policy = Policy::default().auto_approve(false);
+        assert_eq!(
+            policy.evaluate(&plan, &validation),
+            PolicyDecision::RequiresApproval
+        );
+    }
+
+    #[test]
+    fn test_policy_rejects_invalid_even_when_auto_disabled() {
+        // INVALID must be Rejected, NOT RequiresApproval, even when auto_approve=false
+        let plan = make_valid_plan();
+        let mut validation = make_valid_validation();
+        validation.has_invalid = true;
+        let policy = Policy::default().auto_approve(false);
+        assert_eq!(
+            policy.evaluate(&plan, &validation),
+            PolicyDecision::Rejected
+        );
+    }
+
+    #[test]
+    fn test_policy_rejects_conflict_even_when_auto_disabled() {
+        let plan = make_valid_plan();
+        let mut validation = make_valid_validation();
+        validation.has_conflicts = true;
+        let policy = Policy::default().auto_approve(false);
+        assert_eq!(
+            policy.evaluate(&plan, &validation),
+            PolicyDecision::Rejected
+        );
+    }
+
+    #[test]
+    fn test_policy_rejects_dry_run_even_when_auto_disabled() {
+        let mut plan = make_valid_plan();
+        plan.dry_run = true;
         let validation = make_valid_validation();
         let policy = Policy::default().auto_approve(false);
         assert_eq!(
@@ -236,6 +306,11 @@ mod tests {
     #[test]
     fn test_policy_serialization_round_trip() {
         let decision = PolicyDecision::Approved;
+        let json = serde_json::to_string(&decision).expect("should serialize");
+        let deserialized: PolicyDecision = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(decision, deserialized);
+
+        let decision = PolicyDecision::RequiresApproval;
         let json = serde_json::to_string(&decision).expect("should serialize");
         let deserialized: PolicyDecision = serde_json::from_str(&json).expect("should deserialize");
         assert_eq!(decision, deserialized);
@@ -279,8 +354,56 @@ mod tests {
     #[test]
     fn test_policy_decision_helpers() {
         assert!(PolicyDecision::Approved.is_approved());
+        assert!(!PolicyDecision::Approved.is_requires_approval());
         assert!(!PolicyDecision::Approved.is_rejected());
+
+        assert!(PolicyDecision::RequiresApproval.is_requires_approval());
+        assert!(!PolicyDecision::RequiresApproval.is_approved());
+        assert!(!PolicyDecision::RequiresApproval.is_rejected());
+
         assert!(PolicyDecision::Rejected.is_rejected());
         assert!(!PolicyDecision::Rejected.is_approved());
+        assert!(!PolicyDecision::Rejected.is_requires_approval());
+    }
+
+    #[test]
+    fn test_approval_for_plan_contains_plan_id() {
+        let plan = make_valid_plan();
+        let approval = Approval::for_plan(&plan);
+        assert_eq!(approval.plan_id, "test-plan");
+    }
+
+    #[test]
+    fn test_approval_verify_matches_original_plan() {
+        let plan = make_valid_plan();
+        let approval = Approval::for_plan(&plan);
+        assert!(approval.verify(&plan));
+    }
+
+    #[test]
+    fn test_approval_verify_rejects_different_plan_id() {
+        let plan = make_valid_plan();
+        let approval = Approval::for_plan(&plan);
+
+        let mut other = plan.clone();
+        other.id = "different-plan".to_string();
+
+        assert!(
+            !approval.verify(&other),
+            "approval must not verify a plan with different ID"
+        );
+    }
+
+    #[test]
+    fn test_approval_serialization_round_trip() {
+        let plan = make_valid_plan();
+        let approval = Approval::for_plan(&plan);
+        let json = serde_json::to_string(&approval).expect("should serialize");
+        let deserialized: Approval = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(approval.plan_id, deserialized.plan_id);
+        assert!(
+            deserialized.verify(&plan),
+            "deserialized approval must verify"
+        );
     }
 }
