@@ -72,6 +72,7 @@ pub enum Commands {
         plan_file: PathBuf,
         dry_run: bool,
         force: bool,
+        save_log: Option<PathBuf>,
         output: Option<PathBuf>,
     },
     Undo {
@@ -285,6 +286,9 @@ impl Cli {
                     args.value_from_os_str("--plan", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let dry_run = args.contains("--dry-run");
                 let force = args.contains("--force");
+                let save_log = args.opt_value_from_os_str("--save-log", |s| {
+                    Ok::<_, anyhow::Error>(PathBuf::from(s))
+                })?;
                 let output = args.opt_value_from_os_str("--output", |s| {
                     Ok::<_, anyhow::Error>(PathBuf::from(s))
                 })?;
@@ -292,6 +296,7 @@ impl Cli {
                     plan_file,
                     dry_run,
                     force,
+                    save_log,
                     output,
                 }
             }
@@ -576,6 +581,7 @@ impl Cli {
                 plan_file,
                 dry_run,
                 force,
+                save_log,
                 output,
             } => {
                 let plan_json = std::fs::read_to_string(&plan_file)?;
@@ -589,6 +595,11 @@ impl Cli {
 
                 let apply_options = crate::agent::ApplyOptions { force, dry_run };
                 let result = pipeline.apply(&plan, &validation, &apply_options)?;
+
+                if let Some(log_path) = save_log {
+                    result.log.save(&log_path)?;
+                }
+
                 let json_output = serde_json::to_string_pretty(&result)?;
                 write_output(&json_output, output)?;
             }
@@ -597,8 +608,7 @@ impl Cli {
                 dry_run,
                 output,
             } => {
-                let log_json = std::fs::read_to_string(&log_file)?;
-                let log: crate::agent::OperationLog = serde_json::from_str(&log_json)?;
+                let log = crate::agent::OperationLog::load(&log_file)?;
 
                 let pipeline = Pipeline::default();
 

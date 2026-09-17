@@ -1,7 +1,7 @@
 use crate::agent::plan::{FileSystemOperation, OperationPlan};
 use crate::agent::validate::ValidationResult;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,6 +115,45 @@ impl OperationLog {
         }
     }
 
+    pub fn save(&self, path: &Path) -> Result<(), ApplyError> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| ApplyError::SerializationError(e.to_string()))?;
+        std::fs::write(path, json).map_err(|e| ApplyError::IoError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Self, ApplyError> {
+        let json = std::fs::read_to_string(path).map_err(|e| ApplyError::IoError(e.to_string()))?;
+        let log: OperationLog = serde_json::from_str(&json)
+            .map_err(|e| ApplyError::SerializationError(e.to_string()))?;
+        if log.plan_id.is_empty() {
+            return Err(ApplyError::InvalidPlan(
+                "Deserialized OperationLog has empty plan_id".to_string(),
+            ));
+        }
+        if log.total_entries != log.entries.len() {
+            return Err(ApplyError::InvalidPlan(format!(
+                "OperationLog total_entries ({}) does not match entries length ({})",
+                log.total_entries,
+                log.entries.len()
+            )));
+        }
+        if log.success_count + log.failure_count + log.skipped_count != log.total_entries {
+            return Err(ApplyError::InvalidPlan(
+                "OperationLog counts do not add up to total_entries".to_string(),
+            ));
+        }
+        for entry in &log.entries {
+            if entry.plan_id != log.plan_id {
+                return Err(ApplyError::InvalidPlan(format!(
+                    "LogEntry plan_id ({}) does not match OperationLog plan_id ({})",
+                    entry.plan_id, log.plan_id
+                )));
+            }
+        }
+        Ok(log)
+    }
+
     pub fn add_entry(&mut self, entry: LogEntry) {
         if entry.status.is_success() {
             self.success_count += 1;
@@ -180,12 +219,16 @@ pub struct UndoResult {
     pub completed_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ApplyError {
     PlanNotValidated,
     DryRunFlagSet,
     InvalidPlan(String),
     ExecutionError(String),
+    SerializationError(String),
+    IoError(String),
+    MissingLogFile,
 }
 
 impl std::fmt::Display for ApplyError {
@@ -195,6 +238,11 @@ impl std::fmt::Display for ApplyError {
             ApplyError::DryRunFlagSet => write!(f, "Cannot apply a dry-run plan"),
             ApplyError::InvalidPlan(msg) => write!(f, "Invalid plan: {}", msg),
             ApplyError::ExecutionError(msg) => write!(f, "Execution error: {}", msg),
+            ApplyError::SerializationError(msg) => {
+                write!(f, "Serialization error: {}", msg)
+            }
+            ApplyError::IoError(msg) => write!(f, "IO error: {}", msg),
+            ApplyError::MissingLogFile => write!(f, "Operation log file not found"),
         }
     }
 }

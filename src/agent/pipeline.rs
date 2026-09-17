@@ -368,7 +368,7 @@ pub struct PipelineResult {
     pub apply: Option<ApplyResult>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PipelineError {
     IntentParse(String),
     Analysis(AnalyzerError),

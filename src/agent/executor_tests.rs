@@ -1497,3 +1497,159 @@ fn test_undo_move_into_directory_no_parent() {
     assert_eq!(undo_result.total_undo_operations, 1);
     assert!(source.exists(), "source should be restored after undo");
 }
+
+#[test]
+fn test_operation_log_save_load_round_trip() {
+    let dir = tempdir().unwrap();
+    let (plan, _validation) = create_full_plan(dir.path(), false);
+
+    let log_path = dir.path().join("operation-log.json");
+    let log = OperationLog::new(&plan.id);
+    let log_with_entry = {
+        let mut l = log.clone();
+        l.add_entry(LogEntry {
+            id: "entry-1".to_string(),
+            plan_id: plan.id.clone(),
+            operation_type: "move".to_string(),
+            original_source: dir.path().join("source.txt"),
+            applied_target: dir.path().join("dest.txt"),
+            status: ExecutionStatus::Success,
+            started_at: 1000,
+            completed_at: Some(1001),
+            error: None,
+            undo_supported: true,
+        });
+        l.finalize();
+        l
+    };
+
+    log_with_entry.save(&log_path).expect("save should succeed");
+
+    let loaded = OperationLog::load(&log_path).expect("load should succeed");
+    assert_eq!(loaded.plan_id, plan.id);
+    assert_eq!(loaded.entries.len(), 1);
+    assert_eq!(loaded.success_count, 1);
+    assert_eq!(loaded.total_entries, 1);
+    assert_eq!(loaded.entries[0].operation_type, "move");
+    assert_eq!(loaded.entries[0].status, ExecutionStatus::Success);
+}
+
+#[test]
+fn test_cross_process_undo_simulation() {
+    let dir = tempdir().unwrap();
+    let dir_path = dir.path().to_path_buf();
+    let (plan, validation) = create_full_plan(dir.path(), false);
+
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    assert!(source.exists());
+    assert!(!dest.exists());
+
+    let executor = Executor::default();
+    let apply_result = executor
+        .execute(&plan, &validation, false)
+        .expect("should execute");
+
+    assert!(apply_result.is_complete);
+    assert!(!source.exists(), "source should be moved");
+    assert!(dest.exists(), "dest should exist");
+
+    let log_path = dir.path().join("operation-log.json");
+    apply_result.log.save(&log_path).expect("save log");
+
+    drop(apply_result);
+
+    let reloaded = Executor::default();
+    let loaded_log = OperationLog::load(&log_path).expect("should load log");
+
+    let undo_result = reloaded.undo(&loaded_log).expect("should undo");
+    assert_eq!(undo_result.total_undo_operations, 1);
+    assert!(source.exists(), "source should be restored after undo");
+
+    let _ = dir_path;
+}
+
+#[test]
+fn test_load_malformed_json_rejected() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("bad-log.json");
+    std::fs::write(&log_path, "{ this is not valid json").unwrap();
+
+    let result = OperationLog::load(&log_path);
+    assert!(result.is_err(), "malformed JSON should be rejected");
+}
+
+#[test]
+fn test_load_missing_file_rejected() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("nonexistent-log.json");
+
+    let result = OperationLog::load(&log_path);
+    assert!(result.is_err(), "missing log file should be rejected");
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, ApplyError::IoError(_)),
+        "missing file should produce IoError, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn test_load_log_with_empty_plan_id_rejected() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("bad-log.json");
+
+    let bad_log = serde_json::json!({
+        "id": "log-123",
+        "plan_id": "",
+        "entries": [],
+        "started_at": 1000,
+        "completed_at": null,
+        "success_count": 0,
+        "failure_count": 0,
+        "skipped_count": 0,
+        "total_entries": 0
+    });
+    std::fs::write(&log_path, bad_log.to_string()).unwrap();
+
+    let result = OperationLog::load(&log_path);
+    assert!(result.is_err(), "log with empty plan_id should be rejected");
+}
+
+#[test]
+fn test_load_log_with_mismatched_entry_plan_id_rejected() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("bad-log.json");
+
+    let bad_log = serde_json::json!({
+        "id": "log-123",
+        "plan_id": "plan-A",
+        "entries": [
+            {
+                "id": "entry-1",
+                "plan_id": "plan-B",
+                "operation_type": "move",
+                "original_source": "/tmp/source.txt",
+                "applied_target": "/tmp/dest.txt",
+                "status": "success",
+                "started_at": 1000,
+                "completed_at": null,
+                "error": null,
+                "undo_supported": true
+            }
+        ],
+        "started_at": 1000,
+        "completed_at": null,
+        "success_count": 1,
+        "failure_count": 0,
+        "skipped_count": 0,
+        "total_entries": 1
+    });
+    std::fs::write(&log_path, bad_log.to_string()).unwrap();
+
+    let result = OperationLog::load(&log_path);
+    assert!(
+        result.is_err(),
+        "log with mismatched entry plan_id should be rejected"
+    );
+}
