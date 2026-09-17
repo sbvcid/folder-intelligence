@@ -1055,3 +1055,421 @@ fn test_cli_approval_workflow_save_log_after_approval() {
     assert!(undo_result.total_undo_operations > 0);
     assert!(scope.join("readme.txt").exists());
 }
+
+// === Phase 8C: Plan File I/O Tests ===
+
+use std::path::Path;
+
+fn save_plan_json(plan: &OperationPlan, path: &Path) {
+    let json = serde_json::to_string_pretty(plan).expect("should serialize plan");
+    std::fs::write(path, json).expect("should write plan file");
+}
+
+fn load_plan_json(path: &Path) -> OperationPlan {
+    let json = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("Failed to read plan file '{}': {}", path.display(), e));
+    serde_json::from_str(&json)
+        .unwrap_or_else(|e| panic!("Failed to parse plan JSON from '{}': {}", path.display(), e))
+}
+
+#[test]
+fn test_plan_save_load_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+
+    assert_eq!(loaded.id, plan.id);
+    assert_eq!(loaded.scope, plan.scope);
+    assert_eq!(loaded.operations.len(), plan.operations.len());
+    assert_eq!(loaded.dry_run, plan.dry_run);
+    assert_eq!(
+        loaded.estimated_impact.files_moved,
+        plan.estimated_impact.files_moved
+    );
+    assert_eq!(loaded.validation_context, plan.validation_context);
+}
+
+#[test]
+fn test_loaded_plan_process_restart_fresh_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    // Simulate process restart: new Pipeline, load plan from file
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    assert!(!fresh_validation.has_invalid);
+    assert!(!fresh_validation.has_conflicts);
+    assert_eq!(fresh_validation.executable_operations, 1);
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(
+        decision.is_approved(),
+        "default policy should approve valid loaded plan"
+    );
+}
+
+#[test]
+fn test_loaded_plan_detects_filesystem_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    // Simulate filesystem change after plan was saved
+    std::fs::remove_file(scope.join("readme.txt")).unwrap();
+
+    // Load plan and validate against changed filesystem
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&loaded.scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    assert!(
+        fresh_validation.has_invalid,
+        "validation should detect missing source file"
+    );
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(
+        decision.is_rejected(),
+        "changed filesystem should cause policy rejection"
+    );
+}
+
+#[test]
+fn test_loaded_plan_invalid_plan_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let scope = dir.path().join("test_scope");
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::create_dir_all(scope.join("Documents")).unwrap();
+    // Deliberately do NOT create readme.txt — source won't exist
+
+    let plan = OperationPlan {
+        id: "invalid-plan".to_string(),
+        recommendation_id: "rec-1".to_string(),
+        scope: scope.clone(),
+        operations: vec![FileSystemOperation::Move {
+            source: scope.join("readme.txt"),
+            dest: scope.join("Documents").join("readme.txt"),
+        }],
+        estimated_impact: EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 1,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 5,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let plan_path = dir.path().join("invalid-plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&loaded.scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    assert!(
+        fresh_validation.has_invalid,
+        "missing source file should cause invalid operation"
+    );
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(decision.is_rejected(), "invalid plan should be rejected");
+}
+
+#[test]
+fn test_loaded_plan_conflicting_plan_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let scope = dir.path().join("test_scope");
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::create_dir_all(scope.join("Documents")).unwrap();
+    std::fs::write(scope.join("file1.txt"), "a").unwrap();
+    std::fs::write(scope.join("file2.txt"), "b").unwrap();
+
+    let plan = OperationPlan {
+        id: "conflict-plan".to_string(),
+        recommendation_id: "rec-1".to_string(),
+        scope: scope.clone(),
+        operations: vec![
+            FileSystemOperation::Move {
+                source: scope.join("file1.txt"),
+                dest: scope.join("Documents").join("conflict.txt"),
+            },
+            FileSystemOperation::Move {
+                source: scope.join("file2.txt"),
+                dest: scope.join("Documents").join("conflict.txt"),
+            },
+        ],
+        estimated_impact: EstimatedImpact {
+            files_moved: 2,
+            dirs_created: 1,
+            files_deleted: 0,
+            dirs_affected: 2,
+            total_bytes: 2,
+        },
+        validation_warnings: vec![],
+        has_conflicts: true,
+        dry_run: false,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let plan_path = dir.path().join("conflict-plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&loaded.scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    assert!(
+        fresh_validation.has_conflicts,
+        "conflicting operations should be detected by validator"
+    );
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(
+        decision.is_rejected(),
+        "conflicting plan should be rejected"
+    );
+}
+
+#[test]
+fn test_loaded_plan_requires_approval_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    // Simulate process restart
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+    let fresh_validation = pipeline.validate(&loaded);
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(
+        decision.is_requires_approval(),
+        "auto_approve=false should require approval"
+    );
+
+    let source = scope.join("readme.txt");
+    let dest = scope.join("Documents").join("readme.txt");
+    assert!(source.exists(), "source must exist before execution");
+    assert!(!dest.exists(), "dest must not exist before execution");
+
+    // Create approval and apply (simulates --yes)
+    let approval = pipeline
+        .create_approval(&loaded, &fresh_validation)
+        .expect("should create approval");
+    assert_eq!(approval.plan_id, loaded.id);
+
+    let result = pipeline
+        .apply_with_approval(
+            &loaded,
+            &approval,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("should apply with approval");
+
+    assert!(result.is_complete);
+    assert!(!source.exists(), "source should be moved");
+    assert!(dest.exists(), "dest should exist after move");
+
+    // Undo
+    let undo_result = pipeline.undo(&result.log).expect("should undo");
+    assert!(undo_result.total_undo_operations > 0);
+    assert!(source.exists(), "source restored after undo");
+}
+
+#[test]
+fn test_loaded_plan_yes_does_not_bypass_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, mut plan, _validation) = create_approval_scope(&dir);
+    plan.dry_run = true;
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+    let fresh_validation = pipeline.validate(&loaded);
+
+    // Dry-run plan → Rejected
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(decision.is_rejected(), "dry-run plan should be rejected");
+
+    // create_approval should fail for Rejected plans
+    let approval_result = pipeline.create_approval(&loaded, &fresh_validation);
+    assert!(matches!(
+        approval_result,
+        Err(PipelineError::PolicyRejected)
+    ));
+
+    // apply with force should still fail
+    let apply_result = pipeline.apply(
+        &loaded,
+        &fresh_validation,
+        &ApplyOptions {
+            force: true,
+            dry_run: false,
+        },
+    );
+    assert!(matches!(apply_result, Err(PipelineError::PolicyRejected)));
+}
+
+#[test]
+fn test_loaded_plan_produces_operation_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    let result = pipeline
+        .apply(
+            &loaded,
+            &fresh_validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("should apply loaded plan");
+
+    assert!(result.is_complete);
+
+    let log_path = dir.path().join("operation-log.json");
+    result
+        .log
+        .save(&log_path)
+        .expect("should save OperationLog");
+
+    let loaded_log = OperationLog::load(&log_path).expect("should reload OperationLog");
+    assert_eq!(loaded_log.plan_id, result.log.plan_id);
+    assert!(loaded_log.total_entries > 0);
+}
+
+#[test]
+fn test_loaded_plan_cancel_does_not_mutate() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+    let fresh_validation = pipeline.validate(&loaded);
+
+    // RequiresApproval — user rejects
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(decision.is_requires_approval());
+
+    // Simulate user rejecting confirmation (return early without execution)
+    // In the real CLI, this would be confirm_approval() returning false
+    // Here we simply do not call apply — no mutation should occur
+    let source = scope.join("readme.txt");
+    assert!(
+        source.exists(),
+        "source must still exist; no execution happened"
+    );
+}
+
+#[test]
+fn test_loaded_plan_dry_run_cannot_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, mut plan, _validation) = create_approval_scope(&dir);
+
+    plan.dry_run = true;
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&loaded.scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(
+        decision.is_rejected(),
+        "dry-run plan should be rejected by policy"
+    );
+
+    let result = pipeline.apply(
+        &loaded,
+        &fresh_validation,
+        &ApplyOptions {
+            force: false,
+            dry_run: false,
+        },
+    );
+    assert!(matches!(result, Err(PipelineError::PolicyRejected)));
+    assert!(
+        scope.join("readme.txt").exists(),
+        "no filesystem mutation for rejected dry-run plan"
+    );
+}
+
+#[test]
+fn test_loaded_plan_undo_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let plan_path = dir.path().join("plan.json");
+    save_plan_json(&plan, &plan_path);
+
+    let loaded = load_plan_json(&plan_path);
+    let pipeline = Pipeline::new(&loaded.scope);
+    let fresh_validation = pipeline.validate(&loaded);
+
+    let decision = pipeline.policy_evaluate(&loaded, &fresh_validation);
+    assert!(decision.is_approved());
+
+    let result = pipeline
+        .apply(
+            &loaded,
+            &fresh_validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("should apply loaded plan");
+
+    assert!(result.is_complete);
+
+    let log_path = dir.path().join("operation-log.json");
+    result
+        .log
+        .save(&log_path)
+        .expect("should save OperationLog");
+
+    drop(result);
+
+    let loaded_log = OperationLog::load(&log_path).expect("should reload OperationLog");
+
+    let undo_result = pipeline.undo(&loaded_log).expect("should undo loaded plan");
+    assert!(undo_result.total_undo_operations > 0);
+    assert!(scope.join("readme.txt").exists());
+}

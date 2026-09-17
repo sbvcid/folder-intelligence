@@ -2,6 +2,7 @@ pub mod agent;
 pub mod classification;
 pub mod cli;
 pub mod evidence;
+pub mod llm;
 pub mod scanner;
 
 pub use agent::{

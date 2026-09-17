@@ -5,7 +5,7 @@ use crate::evidence::{ScanLimits, ScanResult};
 use crate::scanner::Scanner;
 use anyhow::{anyhow, Result};
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct Cli {
     pub command: Commands,
@@ -61,6 +61,7 @@ pub enum Commands {
     Plan {
         request: String,
         scope: Option<PathBuf>,
+        save_plan: Option<PathBuf>,
         output: Option<PathBuf>,
     },
     Validate {
@@ -82,6 +83,10 @@ pub enum Commands {
         log_file: PathBuf,
         dry_run: bool,
         output: Option<PathBuf>,
+    },
+    Chat {
+        config: Option<PathBuf>,
+        auto_approve: bool,
     },
 }
 
@@ -257,12 +262,16 @@ impl Cli {
                 let scope = args.opt_value_from_os_str("--scope", |s| {
                     Ok::<_, anyhow::Error>(PathBuf::from(s))
                 })?;
+                let save_plan = args.opt_value_from_os_str("--save-plan", |s| {
+                    Ok::<_, anyhow::Error>(PathBuf::from(s))
+                })?;
                 let output = args.opt_value_from_os_str("--output", |s| {
                     Ok::<_, anyhow::Error>(PathBuf::from(s))
                 })?;
                 Commands::Plan {
                     request,
                     scope,
+                    save_plan,
                     output,
                 }
             }
@@ -318,6 +327,16 @@ impl Cli {
                     log_file,
                     dry_run,
                     output,
+                }
+            }
+            "chat" => {
+                let config = args.opt_value_from_os_str("--config", |s| {
+                    Ok::<_, anyhow::Error>(PathBuf::from(s))
+                })?;
+                let auto_approve = args.contains("--auto-approve");
+                Commands::Chat {
+                    config,
+                    auto_approve,
                 }
             }
             _ => return Err(anyhow!("Unknown subcommand: {}", subcommand)),
@@ -548,6 +567,7 @@ impl Cli {
             Commands::Plan {
                 request,
                 scope,
+                save_plan,
                 output,
             } => {
                 let pipeline = if let Some(s) = &scope {
@@ -561,6 +581,11 @@ impl Cli {
                 let plan = pipeline.plan(&recommendation, &analysis, &intent)?;
                 let json_output = serde_json::to_string_pretty(&plan)?;
                 write_output(&json_output, output)?;
+
+                if let Some(save_path) = &save_plan {
+                    save_plan_to_file(&plan, save_path)?;
+                    eprintln!("Plan saved to: {}", save_path.display());
+                }
             }
             Commands::Validate {
                 request,
@@ -593,8 +618,12 @@ impl Cli {
                 save_log,
                 output,
             } => {
-                let plan_json = std::fs::read_to_string(&plan_file)?;
-                let plan: crate::agent::OperationPlan = serde_json::from_str(&plan_json)?;
+                let plan = load_plan_from_file(&plan_file)?;
+                if plan.validation_context.is_none() {
+                    eprintln!(
+                        "Warning: plan has no validation context (legacy format). Fresh validation will reject all operations."
+                    );
+                }
                 if plan.dry_run {
                     return Err(anyhow!("Plan has dry_run=true; cannot apply"));
                 }
@@ -675,6 +704,13 @@ impl Cli {
                 let json_output = serde_json::to_string_pretty(&result)?;
                 write_output(&json_output, output)?;
             }
+            Commands::Chat {
+                config,
+                auto_approve,
+            } => {
+                let chat = crate::llm::ChatCommand::new(config.as_deref(), auto_approve)?;
+                chat.run()?;
+            }
         }
         Ok(())
     }
@@ -694,9 +730,48 @@ fn parse_confirmation(input: &str) -> bool {
     trimmed == "y" || trimmed == "yes"
 }
 
+fn save_plan_to_file(plan: &crate::agent::OperationPlan, path: &Path) -> Result<()> {
+    let json = serde_json::to_string_pretty(plan)?;
+    std::fs::write(path, json)?;
+    Ok(())
+}
+
+fn load_plan_from_file(path: &Path) -> Result<crate::agent::OperationPlan> {
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("Failed to read plan file '{}': {}", path.display(), e))?;
+    let plan: crate::agent::OperationPlan = serde_json::from_str(&json)
+        .map_err(|e| anyhow!("Failed to parse plan JSON from '{}': {}", path.display(), e))?;
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{EstimatedImpact, FileSystemOperation, PlanValidationContext};
+
+    fn make_test_plan(scope: &Path) -> crate::agent::OperationPlan {
+        crate::agent::OperationPlan {
+            id: "test-plan".to_string(),
+            recommendation_id: "rec-1".to_string(),
+            scope: scope.to_path_buf(),
+            operations: vec![FileSystemOperation::Move {
+                source: scope.join("a.txt"),
+                dest: scope.join("subdir").join("a.txt"),
+            }],
+            estimated_impact: EstimatedImpact {
+                files_moved: 1,
+                dirs_created: 1,
+                files_deleted: 0,
+                dirs_affected: 1,
+                total_bytes: 10,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(PlanValidationContext::default()),
+        }
+    }
 
     #[test]
     fn test_parse_confirmation_accepts_yes() {
@@ -716,6 +791,88 @@ mod tests {
         assert!(!parse_confirmation("\n"));
         assert!(!parse_confirmation("yep"));
         assert!(!parse_confirmation("maybe"));
+    }
+
+    #[test]
+    fn test_save_plan_and_load_plan_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = make_test_plan(dir.path());
+
+        let plan_path = dir.path().join("plan.json");
+        save_plan_to_file(&plan, &plan_path).expect("save should succeed");
+
+        let loaded = load_plan_from_file(&plan_path).expect("load should succeed");
+
+        assert_eq!(loaded.id, plan.id);
+        assert_eq!(loaded.scope, plan.scope);
+        assert_eq!(loaded.operations.len(), plan.operations.len());
+        assert_eq!(loaded.dry_run, plan.dry_run);
+        assert_eq!(loaded.validation_context, plan.validation_context);
+    }
+
+    #[test]
+    fn test_load_plan_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_path = dir.path().join("nonexistent.json");
+
+        let result = load_plan_from_file(&plan_path);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to read plan file"),
+            "error should mention file read failure"
+        );
+    }
+
+    #[test]
+    fn test_load_plan_malformed_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_path = dir.path().join("bad.json");
+        std::fs::write(&plan_path, "{ not valid json").unwrap();
+
+        let result = load_plan_from_file(&plan_path);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to parse plan JSON"),
+            "error should mention JSON parse failure"
+        );
+    }
+
+    #[test]
+    fn test_load_plan_legacy_no_validation_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_path = dir.path().join("legacy.json");
+
+        let json = r#"{
+            "id": "legacy-plan",
+            "recommendation_id": "rec-1",
+            "scope": "/tmp/test",
+            "operations": [],
+            "estimated_impact": {
+                "files_moved": 0,
+                "dirs_created": 0,
+                "files_deleted": 0,
+                "dirs_affected": 0,
+                "total_bytes": 0
+            },
+            "validation_warnings": [],
+            "has_conflicts": false,
+            "dry_run": false,
+            "created_at": 0
+        }"#;
+        std::fs::write(&plan_path, json).unwrap();
+
+        let loaded = load_plan_from_file(&plan_path).expect("legacy plan should deserialize");
+
+        assert!(
+            loaded.validation_context.is_none(),
+            "legacy plan without validation_context should be None"
+        );
     }
 }
 
