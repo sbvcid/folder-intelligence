@@ -19,4 +19,5 @@ pub use parser::LlmIntentParser;
 pub use provider::{ChatMessage, LlmError, LlmProvider};
 
 #[cfg(feature = "network")]
+#[allow(unused_imports)]
 pub use openai::OpenAiCompatibleProvider;

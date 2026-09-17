@@ -49,6 +49,24 @@ struct OpenAiChatMessageResponse {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+struct OllamaChatResponse {
+    #[allow(dead_code)]
+    model: Option<String>,
+    #[allow(dead_code)]
+    created_at: Option<String>,
+    message: OllamaMessage,
+    #[allow(dead_code)]
+    done: Option<bool>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OllamaMessage {
+    #[allow(dead_code)]
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
 struct OpenAiErrorResponse {
     error: Option<OpenAiErrorDetail>,
 }
@@ -56,6 +74,7 @@ struct OpenAiErrorResponse {
 #[derive(Debug, Clone, serde::Deserialize)]
 struct OpenAiErrorDetail {
     message: String,
+    #[allow(dead_code)]
     #[serde(default)]
     r#type: Option<String>,
 }
@@ -113,6 +132,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 .map(|d| d.message)
                 .unwrap_or_else(|| format!("HTTP {}: {}", status, body));
             return Err(LlmError::HttpError(status.as_u16(), msg));
+        }
+
+        if let Ok(ollama_resp) = serde_json::from_str::<OllamaChatResponse>(&body) {
+            return Ok(ollama_resp.message.content);
         }
 
         let chat_response: OpenAiChatResponse = serde_json::from_str(&body)
