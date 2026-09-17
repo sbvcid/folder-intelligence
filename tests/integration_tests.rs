@@ -746,3 +746,312 @@ fn test_fixture_empty_directory() {
     assert_eq!(evidence.file_count, 0);
     assert_eq!(evidence.directory_count, 0);
 }
+
+use folder_intelligence::{
+    ApplyOptions, EstimatedImpact, FileSystemOperation, OperationLog, OperationPlan, Pipeline,
+    PipelineError, PlanValidationContext, Policy, ValidatedOperation, ValidationResult,
+    ValidationStatus, ValidationSummary,
+};
+use std::path::PathBuf;
+
+fn create_approval_scope(dir: &tempfile::TempDir) -> (PathBuf, OperationPlan, ValidationResult) {
+    let scope = dir.path().join("test_scope");
+    std::fs::create_dir_all(&scope).unwrap();
+    std::fs::write(scope.join("readme.txt"), "text").unwrap();
+    std::fs::create_dir_all(scope.join("Documents")).unwrap();
+
+    let plan = OperationPlan {
+        id: "approval-test-plan".to_string(),
+        recommendation_id: "rec-1".to_string(),
+        scope: scope.clone(),
+        operations: vec![FileSystemOperation::Move {
+            source: scope.join("readme.txt"),
+            dest: scope.join("Documents").join("readme.txt"),
+        }],
+        estimated_impact: EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 1,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 5,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: scope.clone(),
+        validated_operations: vec![ValidatedOperation {
+            operation: plan.operations[0].clone(),
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    };
+
+    (scope, plan, validation)
+}
+
+#[test]
+fn test_cli_approval_workflow_auto_approved() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_scope, plan, validation) = create_approval_scope(&dir);
+
+    let source = plan.scope.join("readme.txt");
+    let dest = plan.scope.join("Documents").join("readme.txt");
+
+    let pipeline = Pipeline::new(&plan.scope);
+
+    let decision = pipeline.policy_evaluate(&plan, &validation);
+    assert!(
+        decision.is_approved(),
+        "default policy should approve valid plan"
+    );
+
+    let result = pipeline
+        .apply(
+            &plan,
+            &validation,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("apply should succeed");
+
+    assert!(result.is_complete);
+    assert!(!source.exists());
+    assert!(dest.exists());
+
+    let undo_result = pipeline.undo(&result.log).expect("undo should succeed");
+    assert_eq!(undo_result.total_undo_operations, 1);
+    assert!(source.exists());
+}
+
+#[test]
+fn test_cli_approval_workflow_requires_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, validation) = create_approval_scope(&dir);
+
+    let source = scope.join("readme.txt");
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let decision = pipeline.policy_evaluate(&plan, &validation);
+    assert!(
+        decision.is_requires_approval(),
+        "auto_approve=false should require approval"
+    );
+
+    let result = pipeline.apply(
+        &plan,
+        &validation,
+        &ApplyOptions {
+            force: false,
+            dry_run: false,
+        },
+    );
+    assert!(matches!(result, Err(PipelineError::ApprovalRequired(_))));
+    assert!(
+        source.exists(),
+        "source must still exist when approval required"
+    );
+}
+
+#[test]
+fn test_cli_approval_workflow_approved_via_apply_with_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, validation) = create_approval_scope(&dir);
+
+    let source = scope.join("readme.txt");
+    let dest = scope.join("Documents").join("readme.txt");
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let approval = pipeline
+        .create_approval(&plan, &validation)
+        .expect("should create approval");
+
+    assert_eq!(approval.plan_id, plan.id);
+
+    let result = pipeline
+        .apply_with_approval(
+            &plan,
+            &approval,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("apply_with_approval should succeed");
+
+    assert!(result.is_complete);
+    assert!(!source.exists());
+    assert!(dest.exists());
+}
+
+#[test]
+fn test_cli_approval_workflow_rejected_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let mut plan = plan;
+    plan.dry_run = true;
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let validation = pipeline.validate(&plan);
+    let decision = pipeline.policy_evaluate(&plan, &validation);
+
+    assert!(
+        decision.is_rejected(),
+        "dry-run plan must be rejected even with auto_approve=false"
+    );
+
+    let result = pipeline.apply(
+        &plan,
+        &validation,
+        &ApplyOptions {
+            force: false,
+            dry_run: false,
+        },
+    );
+    assert!(matches!(result, Err(PipelineError::PolicyRejected)));
+}
+
+#[test]
+fn test_cli_approval_workflow_with_yes_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, validation) = create_approval_scope(&dir);
+
+    let source = scope.join("readme.txt");
+    let dest = scope.join("Documents").join("readme.txt");
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let decision = pipeline.policy_evaluate(&plan, &validation);
+    assert!(decision.is_requires_approval());
+
+    let approval = pipeline
+        .create_approval(&plan, &validation)
+        .expect("should create approval with yes flag equivalent");
+
+    let result = pipeline
+        .apply_with_approval(
+            &plan,
+            &approval,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("apply_with_approval should succeed with explicit approval");
+
+    assert!(result.is_complete);
+    assert!(!source.exists());
+    assert!(dest.exists());
+}
+
+#[test]
+fn test_cli_approval_workflow_rejected_with_yes_still_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, _validation) = create_approval_scope(&dir);
+
+    let mut plan = plan;
+    plan.dry_run = true;
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let validation = pipeline.validate(&plan);
+    let decision = pipeline.policy_evaluate(&plan, &validation);
+
+    assert!(decision.is_rejected());
+
+    let result = pipeline.apply(
+        &plan,
+        &validation,
+        &ApplyOptions {
+            force: true,
+            dry_run: false,
+        },
+    );
+    assert!(matches!(result, Err(PipelineError::PolicyRejected)));
+}
+
+#[test]
+fn test_cli_approval_workflow_fresh_validation_after_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, validation) = create_approval_scope(&dir);
+
+    let source = scope.join("readme.txt");
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let approval = pipeline
+        .create_approval(&plan, &validation)
+        .expect("should create approval");
+
+    std::fs::remove_file(&source).unwrap();
+
+    let result = pipeline.apply_with_approval(
+        &plan,
+        &approval,
+        &ApplyOptions {
+            force: false,
+            dry_run: false,
+        },
+    );
+    assert!(
+        result.is_err(),
+        "stale plan after filesystem change must be rejected"
+    );
+    assert!(matches!(result, Err(PipelineError::PolicyRejected)));
+}
+
+#[test]
+fn test_cli_approval_workflow_save_log_after_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let (scope, plan, validation) = create_approval_scope(&dir);
+
+    let pipeline = Pipeline::new(&scope).with_policy(Policy::default().auto_approve(false));
+
+    let approval = pipeline
+        .create_approval(&plan, &validation)
+        .expect("should create approval");
+
+    let result = pipeline
+        .apply_with_approval(
+            &plan,
+            &approval,
+            &ApplyOptions {
+                force: false,
+                dry_run: false,
+            },
+        )
+        .expect("should execute");
+
+    let log_path = dir.path().join("operation-log.json");
+    result.log.save(&log_path).expect("should save log");
+
+    drop(result);
+
+    let loaded_log = OperationLog::load(&log_path).expect("should load log");
+
+    let undo_result = pipeline.undo(&loaded_log).expect("should undo");
+    assert!(undo_result.total_undo_operations > 0);
+    assert!(scope.join("readme.txt").exists());
+}

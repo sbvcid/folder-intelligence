@@ -4,6 +4,7 @@ use crate::classification::ClassificationProcessor;
 use crate::evidence::{ScanLimits, ScanResult};
 use crate::scanner::Scanner;
 use anyhow::{anyhow, Result};
+use std::io::BufRead;
 use std::path::PathBuf;
 
 pub struct Cli {
@@ -72,6 +73,8 @@ pub enum Commands {
         plan_file: PathBuf,
         dry_run: bool,
         force: bool,
+        yes: bool,
+        auto_approve: bool,
         save_log: Option<PathBuf>,
         output: Option<PathBuf>,
     },
@@ -286,6 +289,8 @@ impl Cli {
                     args.value_from_os_str("--plan", |s| Ok::<_, anyhow::Error>(PathBuf::from(s)))?;
                 let dry_run = args.contains("--dry-run");
                 let force = args.contains("--force");
+                let yes = args.contains("--yes");
+                let auto_approve = args.contains("--auto-approve");
                 let save_log = args.opt_value_from_os_str("--save-log", |s| {
                     Ok::<_, anyhow::Error>(PathBuf::from(s))
                 })?;
@@ -296,6 +301,8 @@ impl Cli {
                     plan_file,
                     dry_run,
                     force,
+                    yes,
+                    auto_approve,
                     save_log,
                     output,
                 }
@@ -581,6 +588,8 @@ impl Cli {
                 plan_file,
                 dry_run,
                 force,
+                yes,
+                auto_approve,
                 save_log,
                 output,
             } => {
@@ -590,11 +599,57 @@ impl Cli {
                     return Err(anyhow!("Plan has dry_run=true; cannot apply"));
                 }
 
-                let pipeline = Pipeline::new(&plan.scope);
+                let pipeline = Pipeline::new(&plan.scope)
+                    .with_policy(crate::agent::Policy::default().auto_approve(auto_approve));
                 let validation = pipeline.validate(&plan);
 
                 let apply_options = crate::agent::ApplyOptions { force, dry_run };
-                let result = pipeline.apply(&plan, &validation, &apply_options)?;
+
+                let decision = pipeline.policy_evaluate(&plan, &validation);
+
+                let result = match decision {
+                    crate::agent::PolicyDecision::Rejected => {
+                        let reason = if plan.dry_run {
+                            "plan is a dry-run"
+                        } else if validation.has_invalid {
+                            "plan has invalid operations"
+                        } else if validation.has_conflicts {
+                            "plan has conflicting operations"
+                        } else {
+                            "plan rejected by policy"
+                        };
+                        eprintln!("Plan rejected by policy: {}", reason);
+                        return Ok(());
+                    }
+                    crate::agent::PolicyDecision::Approved => {
+                        pipeline.apply(&plan, &validation, &apply_options)?
+                    }
+                    crate::agent::PolicyDecision::RequiresApproval => {
+                        eprintln!("Plan requires explicit approval.");
+                        eprintln!("Plan ID: {}", plan.id);
+                        eprintln!("Operations: {}", plan.operations.len());
+                        eprintln!(
+                            "Files moved: {}, Dirs created: {}",
+                            plan.estimated_impact.files_moved, plan.estimated_impact.dirs_created
+                        );
+                        eprintln!("Scope: {}", plan.scope.display());
+
+                        if !yes {
+                            eprintln!("Execute this plan? [y/N]: ");
+                            let confirmed = confirm_approval();
+                            if !confirmed {
+                                eprintln!("Execution cancelled.");
+                                return Ok(());
+                            }
+                        }
+
+                        let approval = pipeline
+                            .create_approval(&plan, &validation)
+                            .map_err(|e| anyhow!("Failed to create approval: {}", e))?;
+
+                        pipeline.apply_with_approval(&plan, &approval, &apply_options)?
+                    }
+                };
 
                 if let Some(log_path) = save_log {
                     result.log.save(&log_path)?;
@@ -622,6 +677,45 @@ impl Cli {
             }
         }
         Ok(())
+    }
+}
+
+fn confirm_approval() -> bool {
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    match stdin.lock().read_line(&mut input) {
+        Ok(_) => parse_confirmation(&input),
+        Err(_) => false,
+    }
+}
+
+fn parse_confirmation(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "y" || trimmed == "yes"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_confirmation_accepts_yes() {
+        assert!(parse_confirmation("y"));
+        assert!(parse_confirmation("Y"));
+        assert!(parse_confirmation("yes"));
+        assert!(parse_confirmation("YES"));
+        assert!(parse_confirmation("y\n"));
+        assert!(parse_confirmation("yes\r\n"));
+    }
+
+    #[test]
+    fn test_parse_confirmation_rejects_others() {
+        assert!(!parse_confirmation("n"));
+        assert!(!parse_confirmation("no"));
+        assert!(!parse_confirmation(""));
+        assert!(!parse_confirmation("\n"));
+        assert!(!parse_confirmation("yep"));
+        assert!(!parse_confirmation("maybe"));
     }
 }
 
