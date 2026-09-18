@@ -24,7 +24,6 @@ impl OpenAiCompatibleProvider {
 struct OpenAiChatRequest {
     model: String,
     messages: Vec<OpenAiChatMessage>,
-    response_format: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -45,24 +44,6 @@ struct OpenAiChoice {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct OpenAiChatMessageResponse {
-    content: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct OllamaChatResponse {
-    #[allow(dead_code)]
-    model: Option<String>,
-    #[allow(dead_code)]
-    created_at: Option<String>,
-    message: OllamaMessage,
-    #[allow(dead_code)]
-    done: Option<bool>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct OllamaMessage {
-    #[allow(dead_code)]
-    role: String,
     content: String,
 }
 
@@ -95,9 +76,6 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     content: m.content.clone(),
                 })
                 .collect(),
-            response_format: Some(serde_json::json!({
-                "type": "json_object"
-            })),
         };
 
         let response = client
@@ -134,10 +112,6 @@ impl LlmProvider for OpenAiCompatibleProvider {
             return Err(LlmError::HttpError(status.as_u16(), msg));
         }
 
-        if let Ok(ollama_resp) = serde_json::from_str::<OllamaChatResponse>(&body) {
-            return Ok(ollama_resp.message.content);
-        }
-
         let chat_response: OpenAiChatResponse = serde_json::from_str(&body)
             .map_err(|e| LlmError::InvalidResponse(format!("Response parse error: {}", e)))?;
 
@@ -154,5 +128,65 @@ impl LlmProvider for OpenAiCompatibleProvider {
 
     fn name(&self) -> &str {
         "openai-compatible"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_does_not_include_response_format() {
+        let request = OpenAiChatRequest {
+            model: "gemma4:12b".to_string(),
+            messages: vec![OpenAiChatMessage {
+                role: "user".to_string(),
+                content: "請只回答 OK".to_string(),
+            }],
+        };
+
+        let json = serde_json::to_string(&request).expect("should serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("should parse JSON");
+
+        assert!(
+            !parsed.as_object().unwrap().contains_key("response_format"),
+            "request must NOT include response_format (causes Ollama/Gemma timeout)"
+        );
+    }
+
+    #[test]
+    fn test_parse_ollama_openai_compatible_response() {
+        let ollama_response_body = r#"{
+            "id": "chatcmpl-267",
+            "object": "chat.completion",
+            "created": 1789708439,
+            "model": "gemma4:12b",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "OK"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 1,
+                "total_tokens": 21
+            }
+        }"#;
+
+        let chat_response: OpenAiChatResponse =
+            serde_json::from_str(ollama_response_body).expect("should parse Ollama response");
+
+        let content = chat_response
+            .choices
+            .first()
+            .expect("should have choices")
+            .message
+            .content
+            .clone();
+
+        assert_eq!(content, "OK");
     }
 }

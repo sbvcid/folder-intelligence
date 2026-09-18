@@ -399,6 +399,11 @@ impl Cli {
                         let entry = entry?;
                         let path = entry.path();
                         if path.is_dir() && !path.is_symlink() {
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if crate::scanner::is_excluded_directory(name) {
+                                    continue;
+                                }
+                            }
                             candidate_paths.push(path);
                         }
                     }
@@ -440,6 +445,11 @@ impl Cli {
                         let entry = entry?;
                         let path = entry.path();
                         if path.is_dir() && !path.is_symlink() {
+                            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                                if crate::scanner::is_excluded_directory(name) {
+                                    continue;
+                                }
+                            }
                             candidate_paths.push(path);
                         }
                     }

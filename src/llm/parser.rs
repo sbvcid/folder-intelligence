@@ -6,24 +6,37 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 struct LlmIntentResponse {
+    #[serde(default)]
     goal: String,
+    #[serde(default)]
     scope: Option<String>,
+    #[serde(default)]
     purpose: Option<String>,
+    #[serde(default)]
     strategy: Option<String>,
+    #[serde(default)]
     clean_rules: Option<Vec<String>>,
+    #[serde(default)]
     constraints: LlmConstraints,
+    #[serde(default)]
     user_hints: HashMap<String, String>,
+    #[serde(default)]
     unknown_factors: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 struct LlmConstraints {
+    #[serde(default)]
     preserve_existing_folders: bool,
+    #[serde(default)]
     merge_duplicates: bool,
+    #[serde(default)]
     archive_old: Option<u64>,
+    #[serde(default)]
     auto_delete_temps: bool,
+    #[serde(default)]
     max_interactive_questions: usize,
 }
 
@@ -201,5 +214,39 @@ impl LlmIntentParser {
     #[allow(dead_code)]
     pub fn provider_name(&self) -> &str {
         self.provider.name()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_partial_json_missing_constraints() {
+        let partial_response = r#"{"goal": "organize"}"#;
+        let response: LlmIntentResponse =
+            serde_json::from_str(partial_response).expect("should parse partial JSON");
+        assert_eq!(response.goal, "organize");
+        assert!(response.constraints.preserve_existing_folders == false);
+        assert!(response.unknown_factors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_partial_json_missing_all_optional() {
+        let partial_response = r#"{}"#;
+        let response: LlmIntentResponse =
+            serde_json::from_str(partial_response).expect("should parse empty JSON");
+        assert_eq!(response.goal, "");
+    }
+
+    #[test]
+    fn test_parse_full_response_still_works() {
+        let full_response = r#"{"goal":"organize","scope":null,"purpose":"general_organization","strategy":null,"clean_rules":null,"constraints":{"preserve_existing_folders":true,"merge_duplicates":true,"auto_delete_temps":false,"max_interactive_questions":3},"user_hints":{},"unknown_factors":[]}"#;
+        let response: LlmIntentResponse =
+            serde_json::from_str(full_response).expect("should parse full JSON");
+        assert_eq!(response.goal, "organize");
+        assert!(response.constraints.preserve_existing_folders);
+        assert!(response.constraints.merge_duplicates);
+        assert_eq!(response.constraints.max_interactive_questions, 3);
     }
 }

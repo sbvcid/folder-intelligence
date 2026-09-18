@@ -314,6 +314,11 @@ impl EvidenceAnalyzer {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() && !path.is_symlink() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if crate::scanner::is_excluded_directory(name) {
+                            continue;
+                        }
+                    }
                     let child_meta = metadata.limits.clone();
                     if let Ok(child_scan) = Scanner::with_limits(&path, child_meta).inspect_single()
                     {

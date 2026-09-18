@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[allow(dead_code)]
@@ -434,6 +434,10 @@ fn scan_single_directory(
         }
 
         if ft.is_dir() {
+            if is_excluded_directory(&file_name_str) {
+                state.stats.dirs_skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             directory_count += 1;
             child_directory_names.push(file_name_str.clone());
             subdirs.push(path.clone());
@@ -608,8 +612,14 @@ fn scan_directory_partial(
         }
 
         if ft.is_dir() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if is_excluded_directory(&name_str) {
+                state.stats.dirs_skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             directory_count += 1;
-            if let Some(name) = entry.file_name().to_str() {
+            if let Some(name) = name.to_str() {
                 child_directory_names.push(name.to_string());
             }
         } else if ft.is_file() {
@@ -677,6 +687,28 @@ fn scan_directory_partial(
         scan_duration_ms: 0,
         schema_version: SCHEMA_VERSION.to_string(),
     })
+}
+
+pub fn is_excluded_directory(name: &str) -> bool {
+    const EXCLUDED_DIRS: &[&str] = &[
+        "target",
+        "node_modules",
+        ".git",
+        ".svn",
+        ".hg",
+        "CVS",
+        ".cargo",
+        ".rustup",
+        "dist",
+        "build",
+        "out",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".virtualenv",
+    ];
+
+    EXCLUDED_DIRS.contains(&name)
 }
 
 fn is_permission_error(error: &std::io::Error) -> bool {
@@ -859,40 +891,58 @@ fn extract_identifiers(filename: &str) -> Vec<SyntacticIdentifier> {
 }
 
 fn extract_isbn10(s: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?:\d[-\s]?){9}[\dX]").ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"(?:\d[-\s]?){9}[\dX]").expect("valid regex"));
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_isbn13(s: &str) -> Option<String> {
-    let re = regex::Regex::new(
-        r"(?:97[89][-\s]?(?:\d[-\s]?){1,5}\d[-\s]?(?:\d[-\s]?){1,7}\d[-\s]?(?:\d[-\s]?){1,7}\d)",
-    )
-    .ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?:97[89][-\s]?(?:\d[-\s]?){1,5}\d[-\s]?(?:\d[-\s]?){1,7}\d[-\s]?(?:\d[-\s]?){1,7}\d)",
+        )
+        .expect("valid regex")
+    });
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_doi(s: &str) -> Option<String> {
-    let re = regex::Regex::new(r"10\.\d{4,9}[/_][-_/;:A-Za-z0-9]+").ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"10\.\d{4,9}[/_][-_/;:A-Za-z0-9]+").expect("valid regex")
+    });
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_uuid(s: &str) -> Option<String> {
-    let re = regex::Regex::new(
-        r"(?:^|[^0-9a-fA-F])([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[^0-9a-fA-F]|$)"
-    ).ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?:^|[^0-9a-fA-F])([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:[^0-9a-fA-F]|$)",
+        )
+        .expect("valid regex")
+    });
     re.captures(s)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }
 
 fn extract_semver(s: &str) -> Option<String> {
-    let re = regex::Regex::new(
-        r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)"
-    ).ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)",
+        )
+        .expect("valid regex")
+    });
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_hash(s: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?:^|[^0-9a-fA-F])([a-fA-F0-9]{32})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{40})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{64})(?:[^0-9a-fA-F]|$)").ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"(?:^|[^0-9a-fA-F])([a-fA-F0-9]{32})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{40})(?:[^0-9a-fA-F]|$)|(?:^|[^0-9a-fA-F])([a-fA-F0-9]{64})(?:[^0-9a-fA-F]|$)").expect("valid regex")
+    });
     re.captures(s).and_then(|caps| {
         caps.get(1)
             .or_else(|| caps.get(2))
@@ -902,9 +952,13 @@ fn extract_hash(s: &str) -> Option<String> {
 }
 
 fn extract_date(s: &str) -> Option<String> {
-    let re = regex::Regex::new(
-        r"(?:^|[^0-9A-Za-z.-])(19|20)\d{2}[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](19|20)\d{2}(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)"
-    ).ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?:^|[^0-9A-Za-z.-])(19|20)\d{2}[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(0[1-9]|[12]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](19|20)\d{2}(?:[^0-9A-Za-z]|$)|(?:^|[^0-9A-Za-z.-])(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[^0-9A-Za-z]|$)",
+        )
+        .expect("valid regex")
+    });
     re.find(s).map(|m| {
         m.as_str()
             .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
@@ -913,18 +967,27 @@ fn extract_date(s: &str) -> Option<String> {
 }
 
 fn extract_email(s: &str) -> Option<String> {
-    let re = regex::Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b").ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+            .expect("valid regex")
+    });
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_url(s: &str) -> Option<String> {
-    let re = regex::Regex::new(r"\bhttps?://[^\s/$.?#].[^\s]*\b").ok()?;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE
+        .get_or_init(|| regex::Regex::new(r"\bhttps?://[^\s/$.?#].[^\s]*\b").expect("valid regex"));
     re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn extract_alphanumeric_codes(s: &str) -> Vec<SyntacticIdentifier> {
-    let re =
-        regex::Regex::new(r"[A-Z]{2,}[-_]?\d{3,}(?:[-_]\d+)*|[A-Z]{2,}[-_]?[A-Z]+\d{2,}").unwrap();
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"[A-Z]{2,}[-_]?\d{3,}(?:[-_]\d+)*|[A-Z]{2,}[-_]?[A-Z]+\d{2,}")
+            .expect("valid regex")
+    });
     re.find_iter(s)
         .take(MAX_IDENTIFIERS_PER_FILE)
         .map(|m| SyntacticIdentifier {
@@ -1626,5 +1689,53 @@ mod tests {
 
         assert!(!result.metadata.scan_batch_id.is_empty());
         assert_eq!(result.evidence[0].schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_excluded_directories_not_scanned() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("keepme.txt"), "x").unwrap();
+
+        fs::create_dir(dir.path().join("target")).unwrap();
+        fs::write(dir.path().join("target").join("build_art.json"), "x").unwrap();
+        fs::create_dir(dir.path().join("target").join("deps")).unwrap();
+        fs::write(dir.path().join("target").join("deps").join("deep.txt"), "x").unwrap();
+
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        fs::write(dir.path().join(".git").join("config"), "x").unwrap();
+
+        fs::create_dir(dir.path().join("node_modules")).unwrap();
+        fs::write(dir.path().join("node_modules").join("pkg.js"), "x").unwrap();
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let names: Vec<&str> = result.evidence.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            !names.contains(&"target"),
+            "target/ should be excluded from scan"
+        );
+        assert!(
+            !names.contains(&".git"),
+            ".git/ should be excluded from scan"
+        );
+        assert!(
+            !names.contains(&"node_modules"),
+            "node_modules/ should be excluded from scan"
+        );
+
+        let root_ev = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
+        assert_eq!(root_ev.file_count, 1);
+        assert_eq!(root_ev.directory_count, 0, "excluded dirs should not count");
+
+        assert!(
+            result.metadata.stats.dirs_skipped >= 3,
+            "should have skipped at least 3 excluded dirs, got {}",
+            result.metadata.stats.dirs_skipped
+        );
     }
 }

@@ -1473,3 +1473,515 @@ fn test_loaded_plan_undo_workflow() {
     assert!(undo_result.total_undo_operations > 0);
     assert!(scope.join("readme.txt").exists());
 }
+
+mod stress_tests {
+    use super::*;
+    use folder_intelligence::is_excluded_directory;
+    use std::path::PathBuf;
+
+    const EXCLUDED_DIRS: &[&str] = &["target", ".git", "node_modules", "build", "dist"];
+
+    fn create_stress_fixture(dir: &std::path::Path) {
+        for i in 0..200 {
+            fs::write(
+                dir.join(format!("file_{:04}.txt", i)),
+                format!("content_{}", i),
+            )
+            .unwrap();
+        }
+        for ext in &["pdf", "jpg", "mp3", "png", "zip"] {
+            fs::write(dir.join(format!("sample.{}", ext)), "data").unwrap();
+        }
+
+        let docs = dir.join("documents");
+        fs::create_dir(&docs).unwrap();
+        for i in 0..50 {
+            fs::write(docs.join(format!("doc_{:03}.txt", i)), "doc").unwrap();
+        }
+
+        let images = dir.join("images");
+        fs::create_dir(&images).unwrap();
+        for i in 0..30 {
+            fs::write(images.join(format!("img_{:03}.png", i)), "img").unwrap();
+        }
+
+        let deep = dir
+            .join("level1")
+            .join("level2")
+            .join("level3")
+            .join("level4");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("deep_file.txt"), "deep").unwrap();
+
+        for excl in EXCLUDED_DIRS {
+            let excl_dir = dir.join(excl);
+            fs::create_dir_all(&excl_dir).unwrap();
+            for i in 0..100 {
+                fs::write(excl_dir.join(format!("build_{}.rs", i)), "build").unwrap();
+            }
+        }
+
+        let empty = dir.join("empty_folder");
+        fs::create_dir(&empty).unwrap();
+
+        fs::write(dir.join("文件_1.txt"), "chinese1").unwrap();
+        fs::write(dir.join("目录_2.md"), "chinese2").unwrap();
+
+        fs::write(dir.join("readme.txt"), "readme").unwrap();
+        fs::write(dir.join("README.txt"), "README").unwrap();
+    }
+
+    fn count_files_recursive(dir: &std::path::Path) -> (u64, u64) {
+        let mut dirs_scanned: u64 = 0;
+        let mut files_found: u64 = 0;
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            dirs_scanned += 1;
+            if let Ok(entries) = fs::read_dir(&current) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_symlink() {
+                        continue;
+                    }
+                    if path.is_dir() {
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            if is_excluded_directory(name) {
+                                continue;
+                            }
+                        }
+                        stack.push(path);
+                    } else if path.is_file() {
+                        files_found += 1;
+                    }
+                }
+            }
+        }
+        (dirs_scanned, files_found)
+    }
+
+    fn assert_excluded_not_in_evidence(evidence: &[DirectoryEvidence], excluded_names: &[&str]) {
+        for ev in evidence {
+            for child in &ev.child_directory_names {
+                for excl in excluded_names {
+                    assert_ne!(
+                        child,
+                        excl,
+                        "Excluded dir '{}' found in child_directory_names at {}",
+                        excl,
+                        ev.path.display()
+                    );
+                }
+            }
+            let basename = ev.path.file_name().and_then(|n| n.to_str());
+            if let Some(name) = basename {
+                for excl in excluded_names {
+                    assert_ne!(
+                        name,
+                        *excl,
+                        "Excluded dir '{}' found as evidence path: {}",
+                        excl,
+                        ev.path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_stress_excluded_dirs_not_scanned() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let (dirs_scanned, _) = count_files_recursive(dir.path());
+
+        assert_eq!(
+            result.metadata.stats.directories_scanned, dirs_scanned,
+            "Scanner should scan same number of dirs as reference (excluding excluded dirs)"
+        );
+
+        assert_excluded_not_in_evidence(&result.evidence, EXCLUDED_DIRS);
+
+        assert!(
+            result.metadata.stats.dirs_skipped >= EXCLUDED_DIRS.len() as u64,
+            "Should have skipped at least {} excluded dirs, got {}",
+            EXCLUDED_DIRS.len(),
+            result.metadata.stats.dirs_skipped
+        );
+    }
+
+    #[test]
+    fn test_stress_excluded_dir_contents_not_in_any_evidence() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        for ev in &result.evidence {
+            for name in &ev.notable_filenames {
+                for excl in EXCLUDED_DIRS {
+                    assert!(
+                        !name.contains(excl),
+                        "Excluded dir name '{}' found in notable_filenames at {}",
+                        excl,
+                        ev.path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_stress_normal_dirs_still_scanned() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let root_ev = result
+            .evidence
+            .iter()
+            .find(|e| e.parent_path.is_none())
+            .unwrap();
+
+        assert!(
+            root_ev.file_count >= 200,
+            "Root should have 200+ regular files, got {}",
+            root_ev.file_count
+        );
+        assert!(
+            root_ev.directory_count >= 3,
+            "Root should have multiple subdirectories (non-excluded), got {}",
+            root_ev.directory_count
+        );
+    }
+
+    #[test]
+    fn test_stress_scan_completes_quickly() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        assert!(
+            result.metadata.stats.duration_ms < 10_000,
+            "Scan should complete in under 10s, took {}ms",
+            result.metadata.stats.duration_ms
+        );
+
+        let (dirs_scanned, files_found) = count_files_recursive(dir.path());
+        assert_eq!(result.metadata.stats.files_encountered, files_found);
+        assert_eq!(result.metadata.stats.directories_scanned, dirs_scanned);
+    }
+
+    #[test]
+    fn test_stress_analysis_completes_on_project_root() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let pipeline = Pipeline::new(dir.path());
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        assert_excluded_not_in_evidence(&[analysis.scope_evidence.clone()], EXCLUDED_DIRS);
+
+        assert!(
+            analysis
+                .candidate_categories
+                .iter()
+                .all(|c| !EXCLUDED_DIRS.contains(&c.name.as_str())),
+            "Candidate categories should not include excluded dirs"
+        );
+
+        assert!(
+            analysis.analysis_duration_ms < 15_000,
+            "Analysis should complete in under 15s, took {}ms",
+            analysis.analysis_duration_ms
+        );
+    }
+
+    #[test]
+    fn test_stress_recommendation_completes() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let pipeline = Pipeline::new(dir.path());
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+
+        assert!(
+            !recommendation.proposed_operations.is_empty() || !recommendation.warnings.is_empty(),
+            "Should have some operations or warnings"
+        );
+    }
+
+    #[test]
+    fn test_stress_plan_generation_completes() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let pipeline = Pipeline::new(dir.path());
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+
+        assert!(!plan.operations.is_empty(), "Plan should have operations");
+
+        let validation = pipeline.validate(&plan);
+        assert!(
+            !validation.has_invalid,
+            "Plan should be valid (no invalid operations)"
+        );
+    }
+
+    #[test]
+    fn test_stress_chinese_filenames_handled() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let all_names: Vec<String> = result
+            .evidence
+            .iter()
+            .flat_map(|ev| ev.filename_sample.iter().cloned())
+            .collect();
+
+        assert!(
+            all_names
+                .iter()
+                .any(|n| n.contains("文件") || n.contains("目录")),
+            "Chinese filenames should appear in scan results"
+        );
+    }
+
+    #[test]
+    fn test_stress_empty_folder_detected() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let empty_ev = result.evidence.iter().find(|e| e.name == "empty_folder");
+        assert!(
+            empty_ev.is_some(),
+            "Empty folder should appear in scan results"
+        );
+        assert!(empty_ev.unwrap().is_empty);
+    }
+
+    #[test]
+    fn test_stress_deep_nesting_scanned() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        let deep_ev = result.evidence.iter().find(|e| e.path.ends_with("level4"));
+        assert!(
+            deep_ev.is_some(),
+            "Deep nested directory should be found in scan results"
+        );
+        assert_eq!(deep_ev.unwrap().depth, 4);
+    }
+
+    #[test]
+    fn test_stress_filesystem_info_flow() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let scanner = Scanner::new(dir.path());
+        let scan_result = scanner.scan().unwrap();
+        assert!(!scan_result.evidence.is_empty());
+        assert_eq!(
+            scan_result.evidence.len(),
+            scan_result.metadata.stats.directories_scanned as usize
+        );
+        let root_evidence = &scan_result.evidence[0];
+
+        let pipeline = Pipeline::new(dir.path());
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        assert_eq!(
+            analysis.scope_evidence.path, root_evidence.path,
+            "Analysis scope_evidence path should match scanned root"
+        );
+        assert_eq!(
+            analysis.scope_evidence.file_count, root_evidence.file_count,
+            "Analysis file_count should match scanned root"
+        );
+        assert_eq!(
+            analysis.scope_evidence.directory_count, root_evidence.directory_count,
+            "Analysis directory_count should match scanned root"
+        );
+    }
+
+    #[test]
+    fn test_large_directory_regression_analysis() {
+        let dir = tempdir().unwrap();
+        for i in 0..5000 {
+            fs::write(
+                dir.path().join(format!("file_{:05}.txt", i)),
+                format!("content_{}", i),
+            )
+            .unwrap();
+        }
+        for excl in EXCLUDED_DIRS {
+            let excl_dir = dir.path().join(excl);
+            fs::create_dir_all(&excl_dir).unwrap();
+            for i in 0..500 {
+                fs::write(excl_dir.join(format!("build_{}.rs", i)), "build").unwrap();
+            }
+        }
+
+        let scanner = Scanner::new(dir.path());
+        let result = scanner.scan().unwrap();
+
+        assert_eq!(result.metadata.stats.files_encountered, 5000u64);
+        assert!(
+            result.metadata.stats.dirs_skipped >= EXCLUDED_DIRS.len() as u64,
+            "Should have skipped {} excluded dirs, got {}",
+            EXCLUDED_DIRS.len(),
+            result.metadata.stats.dirs_skipped
+        );
+        assert!(
+            result.metadata.stats.duration_ms < 30_000,
+            "Large dir scan should complete in <30s, took {}ms",
+            result.metadata.stats.duration_ms
+        );
+
+        assert_excluded_not_in_evidence(&result.evidence, EXCLUDED_DIRS);
+    }
+
+    #[test]
+    fn test_large_directory_regression_full_pipeline() {
+        let dir = tempdir().unwrap();
+        for i in 0..3000 {
+            let ext = if i % 4 == 0 {
+                "txt"
+            } else if i % 4 == 1 {
+                "pdf"
+            } else if i % 4 == 2 {
+                "jpg"
+            } else {
+                "mp3"
+            };
+            fs::write(
+                dir.path().join(format!("file_{:05}.{}", i, ext)),
+                format!("content_{}", i),
+            )
+            .unwrap();
+        }
+        for i in 0..100 {
+            fs::write(dir.path().join(format!("img_{:03}.png", i)), "img").unwrap();
+        }
+        fs::write(dir.path().join("README.md"), "readme").unwrap();
+
+        for excl in EXCLUDED_DIRS {
+            let excl_dir = dir.path().join(excl);
+            fs::create_dir_all(&excl_dir).unwrap();
+            for i in 0..200 {
+                fs::write(excl_dir.join(format!("build_{}.rs", i)), "build").unwrap();
+            }
+        }
+
+        let pipeline = Pipeline::new(dir.path());
+        let intent = pipeline.parse_intent("Organize files by type").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        assert!(
+            analysis.analysis_duration_ms < 30_000,
+            "Analysis should complete in <30s, took {}ms",
+            analysis.analysis_duration_ms
+        );
+
+        assert_excluded_not_in_evidence(&[analysis.scope_evidence.clone()], EXCLUDED_DIRS);
+
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
+        assert!(!validation.has_invalid);
+    }
+
+    #[test]
+    fn test_is_excluded_directory_function() {
+        assert!(is_excluded_directory("target"));
+        assert!(is_excluded_directory(".git"));
+        assert!(is_excluded_directory("node_modules"));
+        assert!(is_excluded_directory("build"));
+        assert!(is_excluded_directory("dist"));
+        assert!(is_excluded_directory(".svn"));
+        assert!(is_excluded_directory("__pycache__"));
+        assert!(is_excluded_directory(".venv"));
+
+        assert!(!is_excluded_directory("src"));
+        assert!(!is_excluded_directory("docs"));
+        assert!(!is_excluded_directory("tests"));
+        assert!(!is_excluded_directory(""));
+        assert!(!is_excluded_directory("my_target"));
+        assert!(!is_excluded_directory("target_files"));
+    }
+
+    #[test]
+    fn test_cli_classify_skips_excluded_dirs() {
+        let dir = tempdir().unwrap();
+        create_stress_fixture(dir.path());
+
+        let target = dir.path().join("file_0000.txt");
+        fs::write(&target, "content").unwrap();
+
+        let category_root = dir.path().to_path_buf();
+
+        fs::create_dir_all(&target).unwrap_err();
+
+        let mut candidate_paths: Vec<PathBuf> = Vec::new();
+        for entry in fs::read_dir(&category_root).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() && !path.is_symlink() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if is_excluded_directory(name) {
+                        continue;
+                    }
+                }
+                candidate_paths.push(path);
+            }
+        }
+
+        let non_excluded_candidates: Vec<String> = candidate_paths
+            .iter()
+            .filter_map(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+
+        for excl in EXCLUDED_DIRS {
+            assert!(
+                !non_excluded_candidates.iter().any(|n| n == excl),
+                "Excluded dir '{}' should not be in candidate list",
+                excl
+            );
+        }
+    }
+}
