@@ -166,7 +166,15 @@ impl EvidenceAnalyzer {
             return Err(AnalyzerError::ScopeNotScannable(scope.clone()));
         }
 
-        let scope_evidence = scan_result.evidence.into_iter().next().unwrap();
+        let canonical_scope = std::fs::canonicalize(&scope).unwrap_or_else(|_| scope.clone());
+        let scope_evidence = scan_result
+            .evidence
+            .into_iter()
+            .find(|e| {
+                let canonical_e_path = std::fs::canonicalize(&e.path).unwrap_or_else(|_| e.path.clone());
+                canonical_e_path == canonical_scope || e.path == scope
+            })
+            .ok_or_else(|| AnalyzerError::ScopeNotScannable(scope.clone()))?;
         let scan_metadata = scan_result.metadata;
 
         self.analyze_with_evidence(intent, scope_evidence, scan_metadata, start)
