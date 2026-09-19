@@ -933,7 +933,6 @@ impl Executor {
         })
     }
 
-    #[allow(dead_code)]
     pub fn capture_precondition(op: &FileSystemOperation) -> Precondition {
         Precondition::capture(op)
     }
@@ -961,7 +960,7 @@ impl Executor {
         }
 
         if !precondition.check_unchanged(op) {
-            let msg = "Precondition violated: filesystem state changed".to_string();
+            let msg = "TOCTOU: Precondition violated — filesystem state changed between inspection and execution".to_string();
             return (
                 ExecutionStatus::Conflict(msg.clone()),
                 Some(now_secs()),
@@ -1034,9 +1033,9 @@ impl Executor {
                         )
                     } else if !precondition.check_unchanged(op) {
                         (
-                            ExecutionStatus::Conflict("Precondition violated: filesystem state changed".to_string()),
+                            ExecutionStatus::Conflict("TOCTOU: Precondition violated — filesystem state changed".to_string()),
                             Some(now_secs()),
-                            Some("Precondition check failed during guarded execution".to_string()),
+                            Some("TOCTOU: Precondition check failed during guarded execution".to_string()),
                             false,
                         )
                     } else {

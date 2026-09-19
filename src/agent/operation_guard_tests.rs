@@ -111,7 +111,6 @@ fn test_precondition_check_changed_source_modified() {
     let precondition = Precondition::capture(&op);
 
     // Modify the source file content (different size to ensure detection)
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     fs::write(&source, "much longer modified content that differs in size").unwrap();
 
     assert!(
@@ -378,8 +377,7 @@ fn test_execute_guarded_toctou_detection() {
     let _lock = ScopeLock::acquire(dir.path(), "toctou-plan").expect("Should acquire lock");
     let guard = OperationGuard::new(op.clone(), _lock);
 
-    // External process modifies the source content (different size + sleep for mtime)
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    // External process modifies the source content (different size)
     fs::write(&source, "much longer modified content that differs in size").unwrap();
 
     // Precondition check should detect the modification
@@ -603,8 +601,7 @@ fn test_precondition_detects_content_modification() {
     assert!(precondition.source_metadata.is_some());
     let original_size = precondition.source_metadata.as_ref().unwrap().size;
 
-    // Modify content - should change size and mtime
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // Modify content - should change size
     fs::write(&source, "significantly longer modified content for testing").unwrap();
 
     let new_precondition = Precondition::capture(&op);
