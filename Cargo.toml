@@ -16,6 +16,7 @@ thiserror = "1.0"
 regex = "1.10"
 toml = "0.8"
 pico-args = "0.5"
+fs2 = "0.4"
 
 [[bin]]
 name = "fi"

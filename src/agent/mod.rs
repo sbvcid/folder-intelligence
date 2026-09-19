@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod clarification;
 pub mod executor;
 pub mod intent;
+pub mod operation_guard;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;
@@ -23,6 +24,10 @@ pub use clarification::{
 pub use executor::{
     ApplyError, ApplyResult, ExecutionStatus, Executor, LogEntry, OperationExecutionState,
     OperationLog, RecoveryResult, UndoConflict, UndoLogEntry, UndoResult,
+};
+#[allow(unused_imports)]
+pub use operation_guard::{
+    ExecutionResult, FileMetadata, OperationGuard, Precondition, ScopeLock,
 };
 #[allow(unused_imports)]
 pub use intent::{CleanRule, ConstraintSet, Goal, IntentParseError, TaskIntent, TaskIntentParser};

@@ -1,3 +1,4 @@
+use crate::agent::operation_guard::{Precondition, ScopeLock};
 use crate::agent::plan::{FileSystemOperation, OperationPlan};
 use crate::agent::validate::ValidationResult;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ pub enum ExecutionStatus {
     Failed(String),
     Skipped(String),
     UndoNotSupported,
+    Conflict(String),
 }
 
 impl ExecutionStatus {
@@ -25,6 +27,10 @@ impl ExecutionStatus {
 
     pub fn is_skipped(&self) -> bool {
         matches!(self, ExecutionStatus::Skipped(_))
+    }
+
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, ExecutionStatus::Conflict(_))
     }
 
     #[allow(dead_code)]
@@ -161,6 +167,8 @@ impl OperationLog {
             self.failure_count += 1;
         } else if entry.status.is_skipped() {
             self.skipped_count += 1;
+        } else if entry.status.is_conflict() {
+            self.failure_count += 1;
         }
 
         self.entries.push(entry);
@@ -872,6 +880,198 @@ impl Executor {
                             )
                         }
                         _ => self.execute_operation(op, idx),
+                    }
+                }
+                OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => {
+                    (
+                        ExecutionStatus::Failed(
+                            "Conflict/Failed state".to_string(),
+                        ),
+                        Some(now_secs()),
+                        Some(
+                            "Cannot execute operation in conflict/failed state".to_string(),
+                        ),
+                        false,
+                    )
+                }
+            };
+
+            if can_undo {
+                undo_supported_count += 1;
+            } else {
+                undo_unsupported_count += 1;
+            }
+
+            let entry = LogEntry {
+                id: entry_id,
+                plan_id: plan.id.clone(),
+                operation_type: op.operation_type().to_string(),
+                original_source: Self::extract_source(op),
+                applied_target: Self::extract_target(op),
+                status,
+                started_at,
+                completed_at,
+                error,
+                undo_supported: can_undo,
+            };
+
+            log.add_entry(entry);
+        }
+
+        log.finalize();
+
+        let is_complete = log.failure_count == 0;
+        let can_undo = undo_supported_count > 0;
+
+        Ok(ApplyResult {
+            plan_id: plan.id.clone(),
+            log,
+            is_complete,
+            can_undo,
+            undo_supported_count,
+            undo_unsupported_count,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn capture_precondition(op: &FileSystemOperation) -> Precondition {
+        Precondition::capture(op)
+    }
+
+    #[allow(dead_code)]
+    pub fn execute_guarded(
+        &self,
+        op: &FileSystemOperation,
+        _validation_entry: Option<&crate::agent::validate::ValidatedOperation>,
+    ) -> (ExecutionStatus, Option<u64>, Option<String>, bool) {
+        let precondition = Precondition::capture(op);
+
+        let revalidated = self.inspect_operation_state(op, None);
+        if !matches!(revalidated, OperationExecutionState::Pending) {
+            let msg = format!(
+                "TOCTOU: State changed from Pending to {} between inspection and execution",
+                revalidated
+            );
+            return (
+                ExecutionStatus::Conflict(msg.clone()),
+                Some(now_secs()),
+                Some(msg),
+                false,
+            );
+        }
+
+        if !precondition.check_unchanged(op) {
+            let msg = "Precondition violated: filesystem state changed".to_string();
+            return (
+                ExecutionStatus::Conflict(msg.clone()),
+                Some(now_secs()),
+                Some(msg),
+                false,
+            );
+        }
+
+        self.execute_operation(op, 0)
+    }
+
+    pub fn resume_execution_guarded(
+        &self,
+        plan: &OperationPlan,
+        validation: &ValidationResult,
+        force: bool,
+    ) -> Result<ApplyResult, ApplyError> {
+        if plan.dry_run {
+            return Err(ApplyError::DryRunFlagSet);
+        }
+
+        let _lock = ScopeLock::acquire(&plan.scope, &plan.id).map_err(|e| {
+            ApplyError::ExecutionError(format!("Failed to acquire scope lock: {}", e))
+        })?;
+
+        let recovery = self.inspect_plan_state(plan, None);
+
+        if recovery.has_conflicts {
+            return Err(ApplyError::InvalidPlan(
+                "Plan has operations in conflict with current filesystem state. Cannot resume.".to_string(),
+            ));
+        }
+
+        let mut log = OperationLog::new(&plan.id);
+        let mut undo_supported_count = 0;
+        let mut undo_unsupported_count = 0;
+
+        for (idx, op) in plan.operations.iter().enumerate() {
+            let entry_id = format!("entry-{}-{}", plan.id, idx);
+            let started_at = now_secs();
+
+            let state = &recovery.states[idx].1;
+
+            let (status, completed_at, error, can_undo) = match state {
+                OperationExecutionState::AlreadyApplied => {
+                    let undo_supported = matches!(
+                        op,
+                        FileSystemOperation::Move { .. } | FileSystemOperation::CreateDir { .. }
+                    );
+                    (
+                        ExecutionStatus::Skipped("Already applied - skipped during guarded resume".to_string()),
+                        Some(now_secs()),
+                        Some("Operation already applied; skipped during guarded resume".to_string()),
+                        undo_supported,
+                    )
+                }
+                OperationExecutionState::Pending => {
+                    let precondition = Precondition::capture(op);
+
+                    let revalidated = self.inspect_operation_state(op, None);
+                    if !matches!(revalidated, OperationExecutionState::Pending) {
+                        (
+                            ExecutionStatus::Conflict(format!(
+                                "TOCTOU: State changed from Pending to {} between inspection and execution",
+                                revalidated
+                            )),
+                            Some(now_secs()),
+                            Some("Filesystem state changed during guarded execution".to_string()),
+                            false,
+                        )
+                    } else if !precondition.check_unchanged(op) {
+                        (
+                            ExecutionStatus::Conflict("Precondition violated: filesystem state changed".to_string()),
+                            Some(now_secs()),
+                            Some("Precondition check failed during guarded execution".to_string()),
+                            false,
+                        )
+                    } else {
+                        let validated = validation.validated_operations.get(idx);
+                        match validated {
+                            Some(v) if v.status.is_invalid() => {
+                                (
+                                    ExecutionStatus::Failed(format!("Invalid: {}", v.status)),
+                                    Some(now_secs()),
+                                    Some("Cannot execute invalid operation".to_string()),
+                                    false,
+                                )
+                            }
+                            Some(v) if v.status.is_conflict() => {
+                                (
+                                    ExecutionStatus::Failed(format!("Conflict: {}", v.status)),
+                                    Some(now_secs()),
+                                    Some("Cannot execute conflicting operation".to_string()),
+                                    false,
+                                )
+                            }
+                            Some(v) if v.status.is_blocked() && !force => {
+                                (
+                                    ExecutionStatus::Skipped(
+                                        "Blocked by constraint".to_string(),
+                                    ),
+                                    Some(now_secs()),
+                                    Some(
+                                        "Skipped due to constraint (use --force to override)".to_string(),
+                                    ),
+                                    false,
+                                )
+                            }
+                            _ => self.execute_operation(op, idx),
+                        }
                     }
                 }
                 OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => {

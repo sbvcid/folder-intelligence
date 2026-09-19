@@ -337,6 +337,27 @@ impl Pipeline {
             .map_err(PipelineError::Apply)
     }
 
+    /// Resume a plan with concurrency protection and precondition revalidation.
+    ///
+    /// Acquires a scope-level file lock to prevent concurrent execution,
+    /// captures preconditions before execution, and revalidates preconditions
+    /// before each mutation to detect TOCTOU races.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn resume_guarded(
+        &self,
+        plan: &OperationPlan,
+        validation: &ValidationResult,
+        options: &ApplyOptions,
+    ) -> Result<ApplyResult, PipelineError> {
+        if plan.dry_run {
+            return Err(PipelineError::Apply(ApplyError::DryRunFlagSet));
+        }
+
+        self.executor
+            .resume_execution_guarded(plan, validation, options.force)
+            .map_err(PipelineError::Apply)
+    }
+
     /// Convenience method: run the full pipeline in one call.
     ///
     /// By default, this runs to plan generation and validation but does NOT execute.
