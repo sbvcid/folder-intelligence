@@ -260,6 +260,34 @@ pub struct ApplyResult {
     pub undo_unsupported_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationExecutionState {
+    AlreadyApplied,
+    Pending,
+    Conflict(String),
+    #[allow(dead_code)]
+    Failed,
+}
+
+impl std::fmt::Display for OperationExecutionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OperationExecutionState::AlreadyApplied => write!(f, "AlreadyApplied"),
+            OperationExecutionState::Pending => write!(f, "Pending"),
+            OperationExecutionState::Conflict(msg) => write!(f, "Conflict: {}", msg),
+            OperationExecutionState::Failed => write!(f, "Failed"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RecoveryResult {
+    #[allow(dead_code)]
+    pub plan_id: String,
+    pub states: Vec<(usize, OperationExecutionState)>,
+    pub has_conflicts: bool,
+}
+
 pub struct Executor;
 
 impl Default for Executor {
@@ -673,6 +701,228 @@ impl Executor {
             )),
             _ => None,
         }
+    }
+
+    pub fn inspect_operation_state(
+        &self,
+        op: &FileSystemOperation,
+        log_entry: Option<&LogEntry>,
+    ) -> OperationExecutionState {
+        match op {
+            FileSystemOperation::Move { source, dest } => {
+                let source_exists = source.exists();
+                let dest_exists = dest.exists();
+                let dest_is_file = dest.is_file();
+
+                if !source_exists && dest_exists && dest_is_file {
+                    OperationExecutionState::AlreadyApplied
+                } else if source_exists && !dest_exists {
+                    if let Some(entry) = log_entry {
+                        if entry.status.is_success() {
+                            return OperationExecutionState::Conflict(format!(
+                                "Log indicates success but source still exists: {}",
+                                source.display()
+                            ));
+                        }
+                    }
+                    OperationExecutionState::Pending
+                } else {
+                    OperationExecutionState::Conflict(format!(
+                        "Ambiguous filesystem state for move: source={}(exists={}), dest={}(exists={}, is_file={})",
+                        source.display(), source_exists,
+                        dest.display(), dest_exists, dest_is_file
+                    ))
+                }
+            }
+            FileSystemOperation::CreateDir { path } => {
+                if path.is_dir() {
+                    OperationExecutionState::AlreadyApplied
+                } else if !path.exists() {
+                    if let Some(entry) = log_entry {
+                        if entry.status.is_success() {
+                            return OperationExecutionState::Conflict(format!(
+                                "Log indicates success but directory does not exist: {}",
+                                path.display()
+                            ));
+                        }
+                    }
+                    OperationExecutionState::Pending
+                } else {
+                    OperationExecutionState::Conflict(format!(
+                        "Path exists but is not a directory: {}",
+                        path.display()
+                    ))
+                }
+            }
+            FileSystemOperation::Delete { path, .. } => {
+                if !path.exists() {
+                    OperationExecutionState::AlreadyApplied
+                } else if let Some(entry) = log_entry {
+                    if entry.status.is_success() {
+                        OperationExecutionState::Conflict(format!(
+                            "Log indicates success but path still exists: {}",
+                            path.display()
+                        ))
+                    } else {
+                        OperationExecutionState::Pending
+                    }
+                } else {
+                    OperationExecutionState::Pending
+                }
+            }
+        }
+    }
+
+    pub fn inspect_plan_state(
+        &self,
+        plan: &OperationPlan,
+        log: Option<&OperationLog>,
+    ) -> RecoveryResult {
+        let mut states = Vec::new();
+        let mut has_conflicts = false;
+
+        for (idx, op) in plan.operations.iter().enumerate() {
+            let entry_id = format!("entry-{}-{}", plan.id, idx);
+            let log_entry = log.and_then(|l| l.entries.iter().find(|e| e.id == entry_id));
+
+            let state = self.inspect_operation_state(op, log_entry);
+            if matches!(state, OperationExecutionState::Conflict(_)) {
+                has_conflicts = true;
+            }
+            states.push((idx, state));
+        }
+
+        RecoveryResult {
+            plan_id: plan.id.clone(),
+            states,
+            has_conflicts,
+        }
+    }
+
+    pub fn resume_execution(
+        &self,
+        plan: &OperationPlan,
+        validation: &ValidationResult,
+        force: bool,
+    ) -> Result<ApplyResult, ApplyError> {
+        if plan.dry_run {
+            return Err(ApplyError::DryRunFlagSet);
+        }
+
+        let recovery = self.inspect_plan_state(plan, None);
+
+        if recovery.has_conflicts {
+            return Err(ApplyError::InvalidPlan(
+                "Plan has operations in conflict with current filesystem state. Cannot resume.".to_string(),
+            ));
+        }
+
+        let mut log = OperationLog::new(&plan.id);
+        let mut undo_supported_count = 0;
+        let mut undo_unsupported_count = 0;
+
+        for (idx, op) in plan.operations.iter().enumerate() {
+            let entry_id = format!("entry-{}-{}", plan.id, idx);
+            let started_at = now_secs();
+
+            let state = &recovery.states[idx].1;
+
+            let (status, completed_at, error, can_undo) = match state {
+                OperationExecutionState::AlreadyApplied => {
+                    let undo_supported = matches!(
+                        op,
+                        FileSystemOperation::Move { .. } | FileSystemOperation::CreateDir { .. }
+                    );
+                    (
+                        ExecutionStatus::Skipped("Already applied - skipped during resume".to_string()),
+                        Some(now_secs()),
+                        Some("Operation already applied; skipped during resume".to_string()),
+                        undo_supported,
+                    )
+                }
+                OperationExecutionState::Pending => {
+                    let validated = validation.validated_operations.get(idx);
+                    match validated {
+                        Some(v) if v.status.is_invalid() => {
+                            (
+                                ExecutionStatus::Failed(format!("Invalid: {}", v.status)),
+                                Some(now_secs()),
+                                Some("Cannot execute invalid operation".to_string()),
+                                false,
+                            )
+                        }
+                        Some(v) if v.status.is_conflict() => {
+                            (
+                                ExecutionStatus::Failed(format!("Conflict: {}", v.status)),
+                                Some(now_secs()),
+                                Some("Cannot execute conflicting operation".to_string()),
+                                false,
+                            )
+                        }
+                        Some(v) if v.status.is_blocked() && !force => {
+                            (
+                                ExecutionStatus::Skipped(
+                                    "Blocked by constraint".to_string(),
+                                ),
+                                Some(now_secs()),
+                                Some(
+                                    "Skipped due to constraint (use --force to override)".to_string(),
+                                ),
+                                false,
+                            )
+                        }
+                        _ => self.execute_operation(op, idx),
+                    }
+                }
+                OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => {
+                    (
+                        ExecutionStatus::Failed(
+                            "Conflict/Failed state".to_string(),
+                        ),
+                        Some(now_secs()),
+                        Some(
+                            "Cannot execute operation in conflict/failed state".to_string(),
+                        ),
+                        false,
+                    )
+                }
+            };
+
+            if can_undo {
+                undo_supported_count += 1;
+            } else {
+                undo_unsupported_count += 1;
+            }
+
+            let entry = LogEntry {
+                id: entry_id,
+                plan_id: plan.id.clone(),
+                operation_type: op.operation_type().to_string(),
+                original_source: Self::extract_source(op),
+                applied_target: Self::extract_target(op),
+                status,
+                started_at,
+                completed_at,
+                error,
+                undo_supported: can_undo,
+            };
+
+            log.add_entry(entry);
+        }
+
+        log.finalize();
+
+        let is_complete = log.failure_count == 0;
+        let can_undo = undo_supported_count > 0;
+
+        Ok(ApplyResult {
+            plan_id: plan.id.clone(),
+            log,
+            is_complete,
+            can_undo,
+            undo_supported_count,
+            undo_unsupported_count,
+        })
     }
 }
 

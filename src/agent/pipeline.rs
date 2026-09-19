@@ -1,6 +1,8 @@
 use crate::agent::analysis::{AnalyzerError, EvidenceAnalyzer, TaskAnalysis};
 use crate::agent::clarification::ClarificationEngine;
-use crate::agent::executor::{ApplyError, ApplyResult, Executor, OperationLog, UndoResult};
+use crate::agent::executor::{
+    ApplyError, ApplyResult, Executor, OperationLog, RecoveryResult, UndoResult,
+};
 use crate::agent::intent::{Goal, IntentParseError, TaskIntent, TaskIntentParser};
 use crate::agent::plan::{OperationPlan, PlanError, PlanGenerator, PlanValidationContext};
 use crate::agent::policy::{Approval, Policy, PolicyDecision};
@@ -286,6 +288,53 @@ impl Pipeline {
     /// Preview what undoing an operation log would do, without mutating the filesystem.
     pub fn preview_undo(&self, log: &OperationLog) -> UndoResult {
         self.executor.preview_undo(log)
+    }
+
+    /// Inspect a plan's current filesystem state for recovery.
+    ///
+    /// Filesystem state is the primary source of truth — the OperationLog
+    /// is only consulted as supplementary evidence. Returns the execution
+    /// state for each operation without mutating the filesystem.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn inspect_plan(
+        &self,
+        plan: &OperationPlan,
+        log: Option<&OperationLog>,
+    ) -> RecoveryResult {
+        self.executor.inspect_plan_state(plan, log)
+    }
+
+    /// Resume a plan that may have been partially executed.
+    ///
+    /// Uses filesystem inspection to determine which operations are
+    /// `AlreadyApplied` (skipped) and which are `Pending` (executed).
+    /// Operations in `Conflict` state cause the entire resume to fail.
+    ///
+    /// The filesystem state is the authority — no trust is placed in
+    /// prior OperationLog entries without filesystem verification.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn resume(
+        &self,
+        plan: &OperationPlan,
+        validation: &ValidationResult,
+        options: &ApplyOptions,
+    ) -> Result<ApplyResult, PipelineError> {
+        if plan.dry_run {
+            return Err(PipelineError::Apply(ApplyError::DryRunFlagSet));
+        }
+
+        let recovery = self.executor.inspect_plan_state(plan, None);
+
+        if recovery.has_conflicts {
+            return Err(PipelineError::Apply(ApplyError::InvalidPlan(
+                "Plan has operations in conflict with current filesystem state. Cannot resume."
+                    .to_string(),
+            )));
+        }
+
+        self.executor
+            .resume_execution(plan, validation, options.force)
+            .map_err(PipelineError::Apply)
     }
 
     /// Convenience method: run the full pipeline in one call.

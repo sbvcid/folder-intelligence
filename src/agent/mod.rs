@@ -21,8 +21,8 @@ pub use clarification::{
 };
 #[allow(unused_imports)]
 pub use executor::{
-    ApplyError, ApplyResult, ExecutionStatus, Executor, LogEntry, OperationLog, UndoConflict,
-    UndoLogEntry, UndoResult,
+    ApplyError, ApplyResult, ExecutionStatus, Executor, LogEntry, OperationExecutionState,
+    OperationLog, RecoveryResult, UndoConflict, UndoLogEntry, UndoResult,
 };
 #[allow(unused_imports)]
 pub use intent::{CleanRule, ConstraintSet, Goal, IntentParseError, TaskIntent, TaskIntentParser};

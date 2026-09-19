@@ -1,5 +1,5 @@
 use super::*;
-use crate::agent::plan::{FileSystemOperation, OperationPlan};
+use crate::agent::plan::{FileSystemOperation, OperationPlan, PlanValidationContext};
 use crate::agent::validate::{
     ValidatedOperation, ValidationResult, ValidationStatus, ValidationSummary,
 };
@@ -1652,4 +1652,566 @@ fn test_load_log_with_mismatched_entry_plan_id_rejected() {
         result.is_err(),
         "log with mismatched entry plan_id should be rejected"
     );
+}
+
+fn make_move_plan(dir: &Path, plan_id: &str, source_name: &str, dest_name: &str) -> OperationPlan {
+    let source = dir.join(source_name);
+    let dest = dir.join(dest_name);
+    OperationPlan {
+        id: plan_id.to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.to_path_buf(),
+        operations: vec![FileSystemOperation::Move {
+            source: source.clone(),
+            dest: dest.clone(),
+        }],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 1,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 1,
+            total_bytes: 1024,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(PlanValidationContext::default()),
+    }
+}
+
+fn make_validation(plan_id: &str, source: PathBuf, dest: PathBuf) -> ValidationResult {
+    let mut summary = ValidationSummary::new();
+    summary.total = 1;
+    summary.valid = 1;
+
+    ValidationResult {
+        plan_id: plan_id.to_string(),
+        scope: source.parent().unwrap_or(Path::new("/")).to_path_buf(),
+        validated_operations: vec![ValidatedOperation {
+            operation: FileSystemOperation::Move {
+                source: source.clone(),
+                dest: dest.clone(),
+            },
+            status: ValidationStatus::Valid,
+            warnings: vec![],
+            dependencies: vec![],
+        }],
+        summary,
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 1,
+    }
+}
+
+#[test]
+fn test_move_pending_state() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "content").unwrap();
+
+    let op = FileSystemOperation::Move {
+        source: source.clone(),
+        dest: dest.clone(),
+    };
+
+    let executor = Executor::default();
+    let state = executor.inspect_operation_state(&op, None);
+
+    assert_eq!(state, OperationExecutionState::Pending);
+    assert!(source.exists());
+    assert!(!dest.exists());
+}
+
+#[test]
+fn test_move_already_applied_state() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "content").unwrap();
+
+    // Simulate: operation already executed (source moved to dest)
+    fs::rename(&source, &dest).unwrap();
+
+    let op = FileSystemOperation::Move {
+        source: source.clone(),
+        dest: dest.clone(),
+    };
+
+    let executor = Executor::default();
+    let state = executor.inspect_operation_state(&op, None);
+
+    assert_eq!(state, OperationExecutionState::AlreadyApplied);
+    assert!(!source.exists());
+    assert!(dest.exists());
+    assert!(dest.is_file());
+}
+
+#[test]
+fn test_move_conflict_state_both_exist() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "source content").unwrap();
+    fs::write(&dest, "dest content").unwrap();
+
+    let op = FileSystemOperation::Move {
+        source: source.clone(),
+        dest: dest.clone(),
+    };
+
+    let executor = Executor::default();
+    let state = executor.inspect_operation_state(&op, None);
+
+    match state {
+        OperationExecutionState::Conflict(msg) => {
+            assert!(msg.contains("Ambiguous"));
+        }
+        _ => panic!("Expected Conflict state, got {:?}", state),
+    }
+}
+
+#[test]
+fn test_move_already_applied_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "original").unwrap();
+
+    let plan = make_move_plan(dir.path(), "idempotent-plan", "source.txt", "dest.txt");
+    let validation = make_validation(&plan.id, source.clone(), dest.clone());
+
+    let executor = Executor::default();
+
+    // Execute the plan
+    let result1 = executor.execute(&plan, &validation, false).unwrap();
+    assert!(result1.is_complete);
+    assert!(!source.exists());
+    assert!(dest.exists());
+
+    // Inspect: should be AlreadyApplied
+    let recovery = executor.inspect_plan_state(&plan, None);
+    assert_eq!(
+        recovery.states[0].1,
+        OperationExecutionState::AlreadyApplied
+    );
+    assert!(!recovery.has_conflicts);
+
+    // Resume: should skip AlreadyApplied, not re-execute
+    let result2 = executor.resume_execution(&plan, &validation, false).unwrap();
+    assert!(result2.is_complete);
+    assert!(result2.log.entries[0].status.is_skipped());
+
+    // Filesystem should be unchanged
+    assert!(!source.exists());
+    assert!(dest.exists());
+    assert_eq!(fs::read_to_string(&dest).unwrap(), "original");
+}
+
+#[test]
+fn test_create_dir_already_applied() {
+    let dir = tempdir().unwrap();
+    let new_dir = dir.path().join("new_dir");
+    fs::create_dir_all(&new_dir).unwrap();
+
+    let op = FileSystemOperation::CreateDir { path: new_dir.clone() };
+    let executor = Executor::default();
+    let state = executor.inspect_operation_state(&op, None);
+
+    assert_eq!(state, OperationExecutionState::AlreadyApplied);
+    assert!(new_dir.is_dir());
+}
+
+#[test]
+fn test_create_dir_conflict_when_path_is_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("not_a_dir");
+    fs::write(&path, "I am a file").unwrap();
+
+    let op = FileSystemOperation::CreateDir { path: path.clone() };
+    let executor = Executor::default();
+    let state = executor.inspect_operation_state(&op, None);
+
+    match state {
+        OperationExecutionState::Conflict(msg) => {
+            assert!(msg.contains("not a directory"));
+        }
+        _ => panic!("Expected Conflict, got {:?}", state),
+    }
+}
+
+#[test]
+fn test_delete_already_applied() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("will_be_deleted.txt");
+    fs::write(&file, "delete me").unwrap();
+    fs::remove_file(&file).unwrap();
+
+    let op = FileSystemOperation::Delete {
+        path: file.clone(),
+        reason: "cleanup".to_string(),
+    };
+    let executor = Executor::default();
+    let state = executor.inspect_operation_state(&op, None);
+
+    assert_eq!(state, OperationExecutionState::AlreadyApplied);
+    assert!(!file.exists());
+}
+
+#[test]
+fn test_recovery_does_not_trust_incomplete_log() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "content").unwrap();
+
+    // Simulate: operation was actually executed (source moved to dest)
+    fs::rename(&source, &dest).unwrap();
+
+    let op = FileSystemOperation::Move {
+        source: source.clone(),
+        dest: dest.clone(),
+    };
+
+    // Log entry says Pending (incomplete log — process crashed before writing success)
+    let incomplete_log_entry = LogEntry {
+        id: "entry-incomplete".to_string(),
+        plan_id: "test-plan".to_string(),
+        operation_type: "move".to_string(),
+        original_source: source.clone(),
+        applied_target: dest.clone(),
+        status: ExecutionStatus::Pending,
+        started_at: 1000,
+        completed_at: None,
+        error: None,
+        undo_supported: true,
+    };
+
+    let executor = Executor::default();
+
+    // With incomplete log: filesystem shows AlreadyApplied
+    let state = executor.inspect_operation_state(&op, Some(&incomplete_log_entry));
+    assert_eq!(
+        state,
+        OperationExecutionState::AlreadyApplied,
+        "Filesystem is authority; incomplete log must not override"
+    );
+
+    // With no log at all: still AlreadyApplied
+    let state_no_log = executor.inspect_operation_state(&op, None);
+    assert_eq!(
+        state_no_log,
+        OperationExecutionState::AlreadyApplied,
+        "Filesystem inspection without log must still detect AlreadyApplied"
+    );
+}
+
+#[test]
+fn test_recovery_does_not_trust_completed_log_when_state_is_wrong() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "content").unwrap();
+
+    let op = FileSystemOperation::Move {
+        source: source.clone(),
+        dest: dest.clone(),
+    };
+
+    // Log entry says Success, but operation was NOT actually applied (source still exists)
+    let success_log_entry = LogEntry {
+        id: "entry-success".to_string(),
+        plan_id: "test-plan".to_string(),
+        operation_type: "move".to_string(),
+        original_source: source.clone(),
+        applied_target: dest.clone(),
+        status: ExecutionStatus::Success,
+        started_at: 1000,
+        completed_at: Some(1001),
+        error: None,
+        undo_supported: true,
+    };
+
+    let executor = Executor::default();
+
+    // Log says Success but source still exists → NOT AlreadyApplied
+    let state = executor.inspect_operation_state(&op, Some(&success_log_entry));
+    match state {
+        OperationExecutionState::Conflict(msg) => {
+            assert!(
+                msg.contains("Log indicates success") && msg.contains("source still exists"),
+                "Expected conflict about log/source mismatch, got: {}",
+                msg
+            );
+        }
+        OperationExecutionState::Pending => {
+            // Acceptable: filesystem says pending, but log disagrees → conflict is better
+            panic!("Expected Conflict (log contradicts filesystem), got Pending");
+        }
+        OperationExecutionState::AlreadyApplied => {
+            panic!("Must NOT trust log blindly — filesystem shows source still exists");
+        }
+        OperationExecutionState::Failed => {
+            panic!("Expected Conflict, got Failed");
+        }
+    }
+
+    // Verify filesystem state: source still exists, dest doesn't
+    assert!(source.exists());
+    assert!(!dest.exists());
+}
+
+#[test]
+fn test_conflict_never_auto_executes() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "source").unwrap();
+    fs::write(&dest, "blocking").unwrap();
+
+    let plan = make_move_plan(dir.path(), "conflict-plan", "source.txt", "dest.txt");
+    let validation = make_validation(&plan.id, source.clone(), dest.clone());
+
+    let executor = Executor::default();
+
+    // Confirm conflict state
+    let recovery = executor.inspect_plan_state(&plan, None);
+    assert!(recovery.has_conflicts, "Plan should have conflicts");
+
+    // Resume should fail, not execute
+    let result = executor.resume_execution(&plan, &validation, false);
+    assert!(
+        result.is_err(),
+        "Resume must fail when operations are in conflict"
+    );
+    match result.unwrap_err() {
+        ApplyError::InvalidPlan(msg) => {
+            assert!(msg.contains("conflict"));
+        }
+        other => panic!("Expected InvalidPlan error, got {:?}", other),
+    }
+
+    // Filesystem must not be mutated
+    assert!(source.exists());
+    assert!(dest.exists());
+    assert_eq!(fs::read_to_string(&dest).unwrap(), "blocking");
+}
+
+#[test]
+fn test_external_content_change_is_detected() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source.txt");
+    let dest = dir.path().join("dest.txt");
+    fs::write(&source, "original").unwrap();
+
+    let plan = make_move_plan(dir.path(), "external-change-plan", "source.txt", "dest.txt");
+    let validation = make_validation(&plan.id, source.clone(), dest.clone());
+
+    let executor = Executor::default();
+
+    // Execute the move
+    let result = executor.execute(&plan, &validation, false).unwrap();
+    assert!(result.is_complete);
+    assert!(!source.exists());
+    assert!(dest.exists());
+
+    // External process recreates source with different content
+    fs::write(&source, "modified by external process").unwrap();
+
+    // Inspect: source now exists AND dest exists → Conflict
+    let recovery = executor.inspect_plan_state(&plan, None);
+    assert!(
+        recovery.has_conflicts,
+        "External recreation of source must be detected as conflict"
+    );
+
+    match &recovery.states[0].1 {
+        OperationExecutionState::Conflict(msg) => {
+            assert!(msg.contains("Ambiguous"), "Expected ambiguous state, got: {}", msg);
+        }
+        _ => panic!("Expected Conflict, got {:?}", recovery.states[0].1),
+    }
+
+    // Resume must fail
+    let resume_result = executor.resume_execution(&plan, &validation, false);
+    assert!(
+        resume_result.is_err(),
+        "Resume must refuse to execute when conflict detected"
+    );
+}
+
+#[test]
+fn test_intentional_noop_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let scope = dir.path().to_path_buf();
+
+    fs::write(scope.join("file1.txt"), "content1").unwrap();
+    fs::write(scope.join("file2.png"), "content2").unwrap();
+
+    let before = crate::agent::executor::Executor::default()
+        .inspect_plan_state(
+            &OperationPlan {
+                id: "noop-plan".to_string(),
+                recommendation_id: "rec".to_string(),
+                scope: scope.clone(),
+                operations: vec![],
+                estimated_impact: crate::agent::EstimatedImpact {
+                    files_moved: 0,
+                    dirs_created: 0,
+                    files_deleted: 0,
+                    dirs_affected: 0,
+                    total_bytes: 0,
+                },
+                validation_warnings: vec![],
+                has_conflicts: false,
+                dry_run: false,
+                created_at: 0,
+                validation_context: Some(PlanValidationContext::default()),
+            },
+            None,
+        );
+
+    assert!(!before.has_conflicts, "Empty plan should not have conflicts");
+    assert!(before.states.is_empty(), "Empty plan should have no states");
+
+    let validation = ValidationResult {
+        plan_id: "noop-plan".to_string(),
+        scope: scope.clone(),
+        validated_operations: vec![],
+        summary: ValidationSummary::new(),
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 0,
+    };
+
+    let executor = Executor::default();
+    let result = executor.resume_execution(&OperationPlan {
+        id: "noop-plan".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: scope.clone(),
+        operations: vec![],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 0,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 0,
+            total_bytes: 0,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 0,
+        validation_context: Some(PlanValidationContext::default()),
+    }, &validation, false).unwrap();
+
+    assert!(result.is_complete, "Empty plan resume should be complete");
+    assert!(result.log.entries.is_empty(), "No operations should be logged");
+
+    // Filesystem must be unchanged
+    assert!(scope.join("file1.txt").exists());
+    assert!(scope.join("file2.png").exists());
+}
+
+#[test]
+fn test_partial_execution_recovery() {
+    let dir = tempdir().unwrap();
+    let source1 = dir.path().join("source1.txt");
+    let dest1 = dir.path().join("dest1.txt");
+    let source2 = dir.path().join("source2.txt");
+    let dest2 = dir.path().join("dest2.txt");
+
+    fs::write(&source1, "first").unwrap();
+    fs::write(&source2, "second").unwrap();
+
+    let plan = OperationPlan {
+        id: "partial-plan".to_string(),
+        recommendation_id: "rec".to_string(),
+        scope: dir.path().to_path_buf(),
+        operations: vec![
+            FileSystemOperation::Move { source: source1.clone(), dest: dest1.clone() },
+            FileSystemOperation::Move { source: source2.clone(), dest: dest2.clone() },
+        ],
+        estimated_impact: crate::agent::EstimatedImpact {
+            files_moved: 2,
+            dirs_created: 0,
+            files_deleted: 0,
+            dirs_affected: 2,
+            total_bytes: 2048,
+        },
+        validation_warnings: vec![],
+        has_conflicts: false,
+        dry_run: false,
+        created_at: 1234567890,
+        validation_context: Some(PlanValidationContext::default()),
+    };
+
+    let validation = ValidationResult {
+        plan_id: plan.id.clone(),
+        scope: dir.path().to_path_buf(),
+        validated_operations: vec![
+            ValidatedOperation {
+                operation: FileSystemOperation::Move { source: source1.clone(), dest: dest1.clone() },
+                status: ValidationStatus::Valid,
+                warnings: vec![],
+                dependencies: vec![],
+            },
+            ValidatedOperation {
+                operation: FileSystemOperation::Move { source: source2.clone(), dest: dest2.clone() },
+                status: ValidationStatus::Valid,
+                warnings: vec![],
+                dependencies: vec![],
+            },
+        ],
+        summary: {
+            let mut s = ValidationSummary::new();
+            s.total = 2;
+            s.valid = 2;
+            s
+        },
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 2,
+    };
+
+    let executor = Executor::default();
+
+    // Simulate partial execution: first Move done, second not started
+    fs::rename(&source1, &dest1).unwrap();
+
+    // Inspect state
+    let recovery = executor.inspect_plan_state(&plan, None);
+    assert!(!recovery.has_conflicts);
+
+    assert_eq!(
+        recovery.states[0].1,
+        OperationExecutionState::AlreadyApplied,
+        "First operation should be AlreadyApplied (source1 renamed to dest1)"
+    );
+    assert_eq!(
+        recovery.states[1].1,
+        OperationExecutionState::Pending,
+        "Second operation should be Pending (source2 still exists)"
+    );
+
+    // Resume: should skip first, execute second
+    let result = executor.resume_execution(&plan, &validation, false).unwrap();
+    assert!(result.is_complete, "Resume should complete successfully");
+
+    // First operation should be Skipped
+    assert!(result.log.entries[0].status.is_skipped());
+    // Second operation should be Success
+    assert!(result.log.entries[1].status.is_success());
+
+    // Verify filesystem state
+    assert!(!source1.exists());
+    assert!(dest1.exists());
+    assert!(!source2.exists());
+    assert!(dest2.exists());
 }
