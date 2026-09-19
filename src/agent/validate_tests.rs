@@ -37,7 +37,7 @@ fn run_pipeline(scope: &PathBuf, request: &str) -> (TaskIntent, OperationPlan) {
 
     let generator = PlanGenerator;
     let mut plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
     plan.validation_context = Some(crate::agent::plan::PlanValidationContext::from(
         &intent.constraints,
@@ -412,7 +412,7 @@ fn test_validate_with_constraint_preserved() {
 
     let generator = PlanGenerator;
     let mut plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
     plan.validation_context = Some(PlanValidationContext::from(&intent.constraints));
 
@@ -517,7 +517,7 @@ fn test_full_pipeline_to_validation() {
 
     let generator = PlanGenerator;
     let mut plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
     plan.validation_context = Some(PlanValidationContext::from(&intent.constraints));
 
@@ -556,7 +556,7 @@ fn test_validate_blocked_by_constraint() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     let validator = PlanValidator::default();

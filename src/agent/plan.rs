@@ -175,7 +175,6 @@ impl PlanGenerator {
         &self,
         recommendation: &Recommendation,
         analysis: &TaskAnalysis,
-        _decisions: &[UserDecision],
     ) -> Result<OperationPlan, PlanError> {
         let scope = analysis.scope_evidence.path.clone();
         let mut operations: Vec<FileSystemOperation> = Vec::new();

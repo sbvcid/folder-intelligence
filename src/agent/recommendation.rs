@@ -268,61 +268,101 @@ impl RecommendationEngine {
 
     fn propose_categories(
         &self,
-        intent: &TaskIntent,
+        _intent: &TaskIntent,
         analysis: &TaskAnalysis,
         _strategy: &RecommendationStrategy,
     ) -> Vec<ProposedCategory> {
         let mut categories = Vec::new();
         let content_groups = &analysis.structure_summary.content_groups;
-        let intent_purpose = match &intent.goal {
-            Goal::Organize { purpose, .. } => purpose.as_str(),
-            Goal::Reorganize {
-                strategy: Some(s), ..
-            } => s.as_str(),
-            _ => "general_organization",
-        };
 
-        for group in content_groups {
-            let purpose = match group.category {
-                crate::agent::analysis::ContentType::Documents => "document_storage".to_string(),
-                crate::agent::analysis::ContentType::Images => "image_storage".to_string(),
-                crate::agent::analysis::ContentType::Archives => "archive_storage".to_string(),
-                crate::agent::analysis::ContentType::Media => "media_storage".to_string(),
-                crate::agent::analysis::ContentType::Code => "code_storage".to_string(),
-                crate::agent::analysis::ContentType::Installers => "installer_storage".to_string(),
-                crate::agent::analysis::ContentType::Data => "data_storage".to_string(),
-                crate::agent::analysis::ContentType::Config => "config_storage".to_string(),
-                crate::agent::analysis::ContentType::Other => "misc_storage".to_string(),
-            };
+        let classification = analysis.classification_results.first();
 
-            let target_path = analysis
-                .candidate_categories
-                .iter()
-                .find(|c| {
-                    c.name.to_lowercase().contains(&purpose)
-                        || c.name.to_lowercase().contains(&group.extension)
-                })
-                .map(|c| c.path.clone());
+        match classification {
+            Some(cr) => {
+                use crate::classification::ClassificationDecision;
+                match cr.decision {
+                    ClassificationDecision::MoveExisting => {
+                        if let Some(ref selected) = cr.selected_candidate {
+                            let candidate = analysis.candidate_categories.iter().find(|c| c.path == *selected);
+                            if let Some(cand) = candidate {
+                                categories.push(ProposedCategory {
+                                    name: cand.name.clone(),
+                                    purpose: cand.name.clone(),
+                                    target_content_types: content_groups.iter().map(|g| g.extension.clone()).collect(),
+                                    confidence: cr.confidence,
+                                    is_existing: true,
+                                    target_path: Some(selected.clone()),
+                                });
+                            }
+                        }
+                    }
+                    ClassificationDecision::CreateCategory => {
+                        if let Some(ref proposed_name) = cr.proposed_category_name {
+                            let category_name = Self::normalize_category_name(proposed_name);
+                            categories.push(ProposedCategory {
+                                name: category_name.clone(),
+                                purpose: proposed_name.clone(),
+                                target_content_types: content_groups.iter().map(|g| g.extension.clone()).collect(),
+                                confidence: cr.confidence,
+                                is_existing: false,
+                                target_path: None,
+                            });
+                        }
+                    }
+                    ClassificationDecision::LeaveUnclassified => {
+                        // No categories proposed for LeaveUnclassified
+                    }
+                    ClassificationDecision::AskUser => {
+                        // No categories proposed for AskUser; will generate unresolved question
+                    }
+                }
+            }
+            None => {
+                // Fallback: use content groups if no classification result
+                for group in content_groups {
+                    let purpose = Self::content_type_to_purpose(&group.category);
+                    let target_path = analysis
+                        .candidate_categories
+                        .iter()
+                        .find(|c| {
+                            c.name.to_lowercase().contains(&purpose)
+                                || c.name.to_lowercase().contains(&group.extension)
+                        })
+                        .map(|c| c.path.clone());
 
-            let is_existing = target_path.is_some();
+                    let is_existing = target_path.is_some();
 
-            categories.push(ProposedCategory {
-                name: purpose.clone(),
-                purpose,
-                target_content_types: vec![group.extension.clone()],
-                confidence: group.percentage_of_scope / 100.0,
-                is_existing,
-                target_path,
-            });
-        }
-
-        if intent_purpose != "general_organization" && intent_purpose != "by_category" {
-            if let Some(custom) = categories.first_mut() {
-                custom.purpose = format!("{} ({})", custom.purpose, intent_purpose);
+                    categories.push(ProposedCategory {
+                        name: purpose.clone(),
+                        purpose,
+                        target_content_types: vec![group.extension.clone()],
+                        confidence: group.percentage_of_scope / 100.0,
+                        is_existing,
+                        target_path,
+                    });
+                }
             }
         }
 
         categories
+    }
+
+    fn content_type_to_purpose(ct: &crate::agent::analysis::ContentType) -> String {
+        match ct {
+            crate::agent::analysis::ContentType::Documents => "document_storage".to_string(),
+            crate::agent::analysis::ContentType::Images => "image_storage".to_string(),
+            crate::agent::analysis::ContentType::Archives => "archive_storage".to_string(),
+            crate::agent::analysis::ContentType::Media => "media_storage".to_string(),
+            crate::agent::analysis::ContentType::Code => "code_storage".to_string(),
+            crate::agent::analysis::ContentType::Installers => "installer_storage".to_string(),
+            crate::agent::analysis::ContentType::Data => "data_storage".to_string(),
+            crate::agent::analysis::ContentType::Config => "config_storage".to_string(),
+            crate::agent::analysis::ContentType::Other => "misc_storage".to_string(),
+        }
+    }
+
+    fn normalize_category_name(name: &str) -> String {
+        name.to_lowercase().replace(' ', "_").replace('-', "_")
     }
 
     fn generate_operations(
@@ -332,54 +372,114 @@ impl RecommendationEngine {
         proposed_categories: &[ProposedCategory],
     ) -> Vec<ProposedOperation> {
         let mut operations = Vec::new();
-        let content_groups = &analysis.structure_summary.content_groups;
 
-        for group in content_groups {
-            let category_name = match group.category {
-                crate::agent::analysis::ContentType::Documents => "document_storage",
-                crate::agent::analysis::ContentType::Images => "image_storage",
-                crate::agent::analysis::ContentType::Archives => "archive_storage",
-                crate::agent::analysis::ContentType::Media => "media_storage",
-                crate::agent::analysis::ContentType::Code => "code_storage",
-                crate::agent::analysis::ContentType::Installers => "installer_storage",
-                crate::agent::analysis::ContentType::Data => "data_storage",
-                crate::agent::analysis::ContentType::Config => "config_storage",
-                crate::agent::analysis::ContentType::Other => "misc_storage",
-            };
+        let classification = analysis.classification_results.first();
 
-            let has_existing = proposed_categories
-                .iter()
-                .any(|c| c.name == category_name && c.is_existing);
-
-            if !has_existing {
-                operations.push(ProposedOperation::CreateCategory {
-                    name: category_name.to_string(),
-                    purpose: category_name.to_string(),
-                });
+        match classification {
+            Some(cr) => {
+                use crate::classification::ClassificationDecision;
+                match cr.decision {
+                    ClassificationDecision::MoveExisting => {
+                        if let Some(ref selected) = cr.selected_candidate {
+                            let candidate = analysis.candidate_categories.iter().find(|c| c.path == *selected);
+                            if let Some(cand) = candidate {
+                                // Use the content groups to determine what to move to the selected candidate
+                                let content_groups = &analysis.structure_summary.content_groups;
+                                for group in content_groups {
+                                    operations.push(ProposedOperation::MoveCategory {
+                                        strategy: self.strategy_name(intent),
+                                        content_type: group.extension.clone(),
+                                        file_count: group.file_count,
+                                        to_category: cand.name.clone(),
+                                    });
+                                }
+                                operations.push(ProposedOperation::PreserveDirectory {
+                                    path: selected.clone(),
+                                });
+                            }
+                        }
+                    }
+                    ClassificationDecision::CreateCategory => {
+                        if let Some(ref proposed_name) = cr.proposed_category_name {
+                            let category_name = Self::normalize_category_name(proposed_name);
+                            let content_groups = &analysis.structure_summary.content_groups;
+                            operations.push(ProposedOperation::CreateCategory {
+                                name: category_name.clone(),
+                                purpose: proposed_name.clone(),
+                            });
+                            for group in content_groups {
+                                operations.push(ProposedOperation::MoveCategory {
+                                    strategy: self.strategy_name(intent),
+                                    content_type: group.extension.clone(),
+                                    file_count: group.file_count,
+                                    to_category: category_name.clone(),
+                                });
+                            }
+                        }
+                    }
+                    ClassificationDecision::LeaveUnclassified => {
+                        // No mutations for LeaveUnclassified
+                        // Only add LeaveUnclassified operation for "Other" content
+                        let leftover_count: u64 = analysis
+                            .content_groups
+                            .iter()
+                            .filter(|g| g.category == crate::agent::analysis::ContentType::Other)
+                            .map(|g| g.file_count)
+                            .sum();
+                        if leftover_count > 0 {
+                            operations.push(ProposedOperation::LeaveUnclassified {
+                                file_count: leftover_count,
+                                reason: "Classification decided LeaveUnclassified".to_string(),
+                            });
+                        }
+                    }
+                    ClassificationDecision::AskUser => {
+                        // No mutations for AskUser - remains unresolved
+                        // The unresolved question is handled in generate_questions
+                    }
+                }
             }
+            None => {
+                // Fallback: use content groups if no classification result
+                let content_groups = &analysis.structure_summary.content_groups;
+                for group in content_groups {
+                    let category_name = Self::content_type_to_purpose(&group.category);
+                    let has_existing = proposed_categories
+                        .iter()
+                        .any(|c| c.name == category_name && c.is_existing);
 
-            operations.push(ProposedOperation::MoveCategory {
-                strategy: self.strategy_name(intent),
-                content_type: group.extension.clone(),
-                file_count: group.file_count,
-                to_category: category_name.to_string(),
-            });
+                    if !has_existing {
+                        operations.push(ProposedOperation::CreateCategory {
+                            name: category_name.to_string(),
+                            purpose: category_name.to_string(),
+                        });
+                    }
+
+                    operations.push(ProposedOperation::MoveCategory {
+                        strategy: self.strategy_name(intent),
+                        content_type: group.extension.clone(),
+                        file_count: group.file_count,
+                        to_category: category_name.to_string(),
+                    });
+                }
+
+                for candidate in &analysis.candidate_categories {
+                    let is_preserved = proposed_categories.iter().any(|c| {
+                        c.target_path
+                            .as_ref()
+                            .map(|p| p == &candidate.path)
+                            .unwrap_or(false)
+                    });
+                    if is_preserved {
+                        operations.push(ProposedOperation::PreserveDirectory {
+                            path: candidate.path.clone(),
+                        });
+                    }
+                }
+            }
         }
 
-        for candidate in &analysis.candidate_categories {
-            let is_preserved = proposed_categories.iter().any(|c| {
-                c.target_path
-                    .as_ref()
-                    .map(|p| p == &candidate.path)
-                    .unwrap_or(false)
-            });
-            if is_preserved {
-                operations.push(ProposedOperation::PreserveDirectory {
-                    path: candidate.path.clone(),
-                });
-            }
-        }
-
+        // Handle constraints that are independent of classification
         if intent.constraints.auto_delete_temps {
             let temps_count = analysis
                 .scope_evidence
@@ -404,29 +504,6 @@ impl RecommendationEngine {
             operations.push(ProposedOperation::ArchiveFiles {
                 category: format!("files_older_than_{}s", archive_secs),
                 file_count: 0,
-            });
-        }
-
-        let leftover_count: u64 = analysis
-            .classification_results
-            .iter()
-            .filter(|r| {
-                r.decision == crate::classification::ClassificationDecision::LeaveUnclassified
-            })
-            .map(|_r| {
-                analysis
-                    .content_groups
-                    .iter()
-                    .filter(|g| g.category == crate::agent::analysis::ContentType::Other)
-                    .map(|g| g.file_count)
-                    .sum::<u64>()
-            })
-            .sum();
-
-        if leftover_count > 0 {
-            operations.push(ProposedOperation::LeaveUnclassified {
-                file_count: leftover_count,
-                reason: "No matching category found".to_string(),
             });
         }
 
@@ -690,28 +767,15 @@ impl RecommendationEngine {
         analysis: &TaskAnalysis,
         warnings: &[RecommendationWarning],
     ) -> f64 {
-        let total_files = analysis.structure_summary.total_files;
-        if total_files == 0 {
-            return 0.0;
-        }
-
-        let classified_files: u64 = analysis
+        // Use classification result's confidence directly as the base,
+        // rather than incorrectly treating classification_results.len() as file count ratio.
+        let base_confidence = analysis
             .classification_results
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.decision,
-                    crate::classification::ClassificationDecision::MoveExisting
-                        | crate::classification::ClassificationDecision::CreateCategory
-                )
-            })
-            .count() as u64;
+            .first()
+            .map(|r| r.confidence)
+            .unwrap_or(0.5);
 
-        let mut confidence = if total_files > 0 {
-            (classified_files as f64 / total_files as f64).min(1.0)
-        } else {
-            0.5
-        };
+        let mut confidence = base_confidence;
 
         if analysis.ambiguities.is_empty() {
             confidence += 0.1;
@@ -768,12 +832,18 @@ impl RecommendationEngine {
             _ => "general",
         };
 
+        let classification_confidence = analysis
+            .classification_results
+            .first()
+            .map(|r| r.confidence)
+            .unwrap_or(0.5);
+
         format!(
             "Analyzed {} directory ({} files, {} subdirectories). \
             Detected {} content type groups. \
             Strategy: {} (purpose: {}). \
             Proposed {} categories. \
-            Classification confidence: {:.0}% of files matched to categories. \
+            Classification confidence: {:.0}%. \
             {} ambiguities and {} evidence gaps require attention.",
             analysis.scope_evidence.path.display(),
             total_files,
@@ -782,17 +852,7 @@ impl RecommendationEngine {
             strategy_name,
             purpose,
             num_categories,
-            analysis
-                .classification_results
-                .iter()
-                .filter(|r| matches!(
-                    r.decision,
-                    crate::classification::ClassificationDecision::MoveExisting
-                        | crate::classification::ClassificationDecision::CreateCategory
-                ))
-                .count() as f64
-                / total_files.max(1) as f64
-                * 100.0,
+            classification_confidence * 100.0,
             analysis.ambiguities.len(),
             analysis.evidence_gaps.len(),
         )

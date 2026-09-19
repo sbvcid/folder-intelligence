@@ -1,0 +1,14 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "mcp": {
+    "git": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "mcp-server-git",
+        "--repository",
+        "/path/to/git/repo"
+      ]
+    }
+  }
+}

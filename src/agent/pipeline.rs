@@ -6,7 +6,9 @@ use crate::agent::executor::{
 use crate::agent::intent::{Goal, IntentParseError, TaskIntent, TaskIntentParser};
 use crate::agent::plan::{OperationPlan, PlanError, PlanGenerator, PlanValidationContext};
 use crate::agent::policy::{Approval, Policy, PolicyDecision};
-use crate::agent::recommendation::{Recommendation, RecommendationEngine, RecommendationError};
+use crate::agent::recommendation::{
+    ProposedOperation, Recommendation, RecommendationEngine, RecommendationError,
+};
 use crate::agent::validate::{PlanPreview, PlanValidator, ValidationResult};
 use crate::evidence::ScanLimits;
 use crate::scanner::Scanner;
@@ -131,10 +133,170 @@ impl Pipeline {
         analysis: &TaskAnalysis,
         intent: &TaskIntent,
     ) -> Result<OperationPlan, PipelineError> {
-        let mut plan = self.planner.generate(recommendation, analysis, &[])?;
+        // Enforce classification -> recommendation -> plan integrity
+        Self::validate_recommendation_plan_integrity(recommendation, analysis)?;
+
+        let mut plan = self.planner.generate(recommendation, analysis)?;
+
+        // Validate Recommendation -> Plan integrity
+        Self::validate_plan_integrity(&plan, recommendation)?;
+
         plan.validation_context = Some(PlanValidationContext::from(&intent.constraints));
         plan.dry_run = false;
         Ok(plan)
+    }
+
+    pub fn validate_recommendation_plan_integrity(
+        recommendation: &Recommendation,
+        analysis: &TaskAnalysis,
+    ) -> Result<(), PipelineError> {
+        if let Some(classification) = analysis.classification_results.first() {
+            match classification.decision {
+                crate::classification::ClassificationDecision::LeaveUnclassified => {
+                    // LeaveUnclassified must not produce mutations
+                    if recommendation.proposed_operations.iter().any(|op| {
+                        matches!(
+                            op,
+                            ProposedOperation::MoveCategory { .. }
+                                | ProposedOperation::CreateCategory { .. }
+                                | ProposedOperation::ArchiveFiles { .. }
+                        )
+                    }) {
+                        return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                            "Integrity violation: Classification is LeaveUnclassified but recommendation proposes mutations".to_string(),
+                        )));
+                    }
+                }
+                crate::classification::ClassificationDecision::AskUser => {
+                    // AskUser must remain unresolved and produce no mutations
+                    if recommendation.proposed_operations.iter().any(|op| {
+                        matches!(
+                            op,
+                            ProposedOperation::MoveCategory { .. }
+                                | ProposedOperation::CreateCategory { .. }
+                                | ProposedOperation::ArchiveFiles { .. }
+                        )
+                    }) {
+                        return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                            "Integrity violation: Classification is AskUser but recommendation proposes mutations".to_string(),
+                        )));
+                    }
+                }
+                crate::classification::ClassificationDecision::MoveExisting => {
+                    if let Some(ref selected) = classification.selected_candidate {
+                        // Find the candidate name for the selected path
+                        let expected_category = analysis.candidate_categories.iter()
+                            .find(|c| c.path == *selected)
+                            .map(|c| c.name.clone());
+
+                        if let Some(ref expected_name) = expected_category {
+                            // Check that at least one MoveCategory operation targets the expected category
+                            let has_matching_move = recommendation.proposed_operations.iter().any(|op| {
+                                if let ProposedOperation::MoveCategory { to_category, .. } = op {
+                                    to_category.to_lowercase() == expected_name.to_lowercase()
+                                        || expected_name.to_lowercase().contains(to_category)
+                                        || to_category.to_lowercase().contains(expected_name)
+                                } else {
+                                    false
+                                }
+                            });
+                            if !has_matching_move && !recommendation.proposed_operations.is_empty() {
+                                return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                                    format!("Integrity violation: Classification MoveExisting targets '{}' but recommendation moves to different category", expected_name),
+                                )));
+                            }
+                        }
+
+                        // Also verify proposed_categories has matching target_path
+                        let has_matching_category = recommendation.proposed_categories.iter().any(|cat| {
+                            cat.target_path.as_ref().map(|p| p == selected).unwrap_or(false)
+                        });
+                        if !has_matching_category && !recommendation.proposed_categories.is_empty() {
+                            return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                                format!("Integrity violation: Classification MoveExisting targets candidate but recommendation proposes different category"),
+                            )));
+                        }
+                    }
+                }
+                crate::classification::ClassificationDecision::CreateCategory => {
+                    if let Some(ref proposed_name) = classification.proposed_category_name {
+                        let expected_normalized = proposed_name.to_lowercase().replace(' ', "_").replace('-', "_");
+                        // Ensure CreateCategory operation matches
+                        let has_matching_create = recommendation.proposed_operations.iter().any(|op| {
+                            if let ProposedOperation::CreateCategory { name, .. } = op {
+                                name.to_lowercase() == expected_normalized
+                                    || expected_normalized.contains(name)
+                            } else {
+                                false
+                            }
+                        });
+                        if !has_matching_create && !recommendation.proposed_operations.is_empty() {
+                            return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                                format!("Integrity violation: Classification CreateCategory proposes '{}' but recommendation creates different category", proposed_name),
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_plan_integrity(
+        plan: &OperationPlan,
+        recommendation: &Recommendation,
+    ) -> Result<(), PipelineError> {
+        // Check that every MoveCategory in recommendation has corresponding Move operations in plan
+        for rec_op in &recommendation.proposed_operations {
+            match rec_op {
+                ProposedOperation::MoveCategory { to_category, .. } => {
+                    // Check if plan has a Move operation targeting this category
+                    let has_matching_move = plan.operations.iter().any(|plan_op| {
+                        if let crate::agent::plan::FileSystemOperation::Move { dest, .. } = plan_op {
+                            // Check if dest is within the expected category directory
+                            let path_str = dest.to_string_lossy().to_lowercase();
+                            let cat_lower = to_category.to_lowercase();
+                            path_str.contains(&cat_lower)
+                        } else {
+                            false
+                        }
+                    });
+                    if !has_matching_move {
+                        return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                            format!("Integrity violation: Recommendation proposes MoveCategory to '{}' but plan has no matching move operation", to_category),
+                        )));
+                    }
+                }
+                ProposedOperation::CreateCategory { name, .. } => {
+                    // Check if plan has a CreateDir for this category
+                    let has_matching_create = plan.operations.iter().any(|plan_op| {
+                        if let crate::agent::plan::FileSystemOperation::CreateDir { path } = plan_op {
+                            let path_str = path.to_string_lossy().to_lowercase();
+                            let name_lower = name.to_lowercase();
+                            path_str.contains(&name_lower)
+                        } else {
+                            false
+                        }
+                    });
+                    if !has_matching_create {
+                        return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                            format!("Integrity violation: Recommendation proposes CreateCategory '{}' but plan has no matching create directory operation", name),
+                        )));
+                    }
+                }
+                ProposedOperation::LeaveUnclassified { .. } => {
+                    // LeaveUnclassified should not produce mutations in plan
+                }
+                ProposedOperation::ArchiveFiles { .. } => {
+                    // ArchiveFiles should have corresponding operations in plan
+                    // We don't strictly enforce this as archive can be complex
+                }
+                ProposedOperation::PreserveDirectory { .. } => {
+                    // PreserveDirectory doesn't create operations
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Validate a plan against its persisted constraints and current filesystem state.

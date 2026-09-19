@@ -63,7 +63,7 @@ fn test_plan_generation_basic() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     assert!(!plan.operations.is_empty());
@@ -91,7 +91,7 @@ fn test_plan_has_create_dir_operations() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     let has_create = plan
@@ -124,7 +124,7 @@ fn test_plan_operations_within_scope() {
 
     let generator = PlanGenerator::default();
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     for op in &plan.operations {
@@ -159,7 +159,7 @@ fn test_plan_serialization() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     let json = serde_json::to_string(&plan).expect("should serialize");
@@ -187,7 +187,7 @@ fn test_plan_preview_contains_operations() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
     let preview = generator.preview(&plan);
 
@@ -216,7 +216,7 @@ fn test_plan_does_not_execute_filesystem() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // Plan should be dry-run by default
@@ -247,7 +247,7 @@ fn test_plan_operation_descriptions() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     for op in &plan.operations {
@@ -281,7 +281,7 @@ fn test_plan_estimated_impact() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     assert!(plan.estimated_impact.dirs_created > 0 || plan.estimated_impact.files_moved > 0);
@@ -307,7 +307,7 @@ fn test_plan_has_recommendation_id() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     assert_eq!(plan.recommendation_id, recommendation.id);
@@ -334,7 +334,7 @@ fn test_plan_validation_warnings_for_missing_files() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // Validation warnings may or may not be present depending on file existence
@@ -364,7 +364,7 @@ fn test_plan_preserves_existing_dir_structure() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // Existing directories (documents, images) should be recognized
@@ -396,7 +396,7 @@ fn test_plan_category_dir_resolution() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // Should have CreateDir operations for new category directories
@@ -438,7 +438,7 @@ fn test_plan_does_not_have_duplicate_destinations() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // Check for duplicate Move destinations (same file being moved twice)
@@ -508,7 +508,7 @@ fn test_plan_with_archive_operation() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // Plan should be generated without errors
@@ -577,7 +577,7 @@ fn test_plan_with_clarified_intent() {
         .expect("should recommend");
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&updated_rec, &analysis, &[])
+        .generate(&updated_rec, &analysis)
         .expect("should generate plan");
 
     assert!(!plan.operations.is_empty());
@@ -624,7 +624,7 @@ fn test_plan_is_dry_run() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     assert!(
@@ -653,7 +653,7 @@ fn test_plan_has_conflicts_detection() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     // has_conflicts may be true or false depending on the content
@@ -741,7 +741,7 @@ fn test_plan_no_source_equals_dest() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     for op in &plan.operations {
@@ -863,7 +863,7 @@ fn test_move_dest_is_full_file_path() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     for op in &plan.operations {
@@ -904,7 +904,7 @@ fn test_move_into_existing_category_directory() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     let moves: Vec<_> = plan
@@ -963,7 +963,7 @@ fn test_move_dest_parent_created_by_planned_create_dir() {
 
     let generator = PlanGenerator;
     let plan = generator
-        .generate(&recommendation, &analysis, &[])
+        .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
     for op in &plan.operations {
