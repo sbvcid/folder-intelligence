@@ -267,12 +267,23 @@ fn test_no_candidate_categories_warning() {
 
     // Flat scope has no existing directories, so no candidate categories
     assert!(analysis.candidate_categories.is_empty());
+    // No classification result for flat scope (no candidates to match against)
+    assert!(analysis.classification_results.is_empty());
 
-    // Should have a warning about no candidate categories
-    assert!(recommendation
-        .warnings
-        .iter()
-        .any(|w| matches!(w, RecommendationWarning::NoCandidateCategories)));
+    // Without ClassificationResult, no categories should be proposed
+    // and no NoCandidateCategories warning should fire (it only fires
+    // when categories are proposed despite having no candidates)
+    assert!(
+        recommendation.proposed_categories.is_empty(),
+        "No categories should be proposed without ClassificationResult"
+    );
+    assert!(
+        !recommendation
+            .warnings
+            .iter()
+            .any(|w| matches!(w, RecommendationWarning::NoCandidateCategories)),
+        "NoCandidateCategories warning should not fire when no categories are proposed"
+    );
 }
 
 #[test]
@@ -682,31 +693,25 @@ fn test_does_not_fabricate_filesystem_evidence() {
 
     // No candidate categories exist (flat structure)
     assert!(analysis.candidate_categories.is_empty());
+    // No classification result without candidate categories
+    assert!(analysis.classification_results.is_empty());
 
     let engine = RecommendationEngine::default();
     let recommendation = engine
         .recommend(&intent, &analysis)
         .expect("should recommend");
 
-    // Proposed categories should not claim to be existing
-    for cat in &recommendation.proposed_categories {
-        assert!(!cat.is_existing);
-        // target_path should be None for non-existing categories
-        assert!(cat.target_path.is_none());
-    }
+    // No categories should be fabricated from ContentType without ClassificationResult
+    assert!(
+        recommendation.proposed_categories.is_empty(),
+        "Must not fabricate categories from ContentType without ClassificationResult"
+    );
 
-    // Should have a warning about no candidate categories
-    assert!(recommendation
-        .warnings
-        .iter()
-        .any(|w| matches!(w, RecommendationWarning::NoCandidateCategories)));
-
-    // Should propose CreateCategory operations, not MoveExisting
-    let has_create = recommendation
-        .proposed_operations
-        .iter()
-        .any(|op| matches!(op, ProposedOperation::CreateCategory { .. }));
-    assert!(has_create);
+    // No operations should be proposed without ClassificationResult
+    assert!(
+        recommendation.proposed_operations.is_empty(),
+        "Must not fabricate operations from ContentType without ClassificationResult"
+    );
 }
 
 #[test]
@@ -854,27 +859,62 @@ fn test_phase15_classification_recommendation_mismatch() {
 }
 
 #[test]
-fn test_phase15_recommendation_plan_mismatch() {
+fn test_phase15_leave_unclassified_zero_mutation() {
     let dir = tempdir().unwrap();
     let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
     let intent = parser.parse("Organize by category").expect("should parse");
 
-    let analyzer = EvidenceAnalyzer::default();
-    let analysis = analyzer.analyze(&intent).expect("should analyze");
+    let analyzer = EvidenceAnalyzer;
+    let mut analysis = analyzer.analyze(&intent).expect("should analyze");
 
-    let pipeline = Pipeline::new(&scope);
-    let recommendation = pipeline.recommend(&intent, &analysis).expect("should recommend");
-    let mut plan = pipeline.plan(&recommendation, &analysis, &intent).expect("should plan");
+    if let Some(res) = analysis.classification_results.first_mut() {
+        res.decision = crate::classification::ClassificationDecision::LeaveUnclassified;
+    }
 
-    // Tamper with plan operations to mismatch recommendation
-    plan.operations.push(crate::agent::plan::FileSystemOperation::CreateDir {
-        path: scope.join("completely_unrelated_dir"),
-    });
+    let engine = RecommendationEngine;
+    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    assert!(recommendation.proposed_operations.is_empty(), "LeaveUnclassified must produce zero mutations");
+}
 
-    // We can test plan integrity validation directly or via a modified check
-    // Let's verify that PlanGenerator / pipeline validation catches unexpected operations
-    assert!(!plan.operations.is_empty());
+#[test]
+fn test_phase15_ask_user_zero_mutation() {
+    let dir = tempdir().unwrap();
+    let scope = create_test_scope(&dir);
+
+    let parser = TaskIntentParser::new(scope.clone());
+    let intent = parser.parse("Organize by category").expect("should parse");
+
+    let analyzer = EvidenceAnalyzer;
+    let mut analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    if let Some(res) = analysis.classification_results.first_mut() {
+        res.decision = crate::classification::ClassificationDecision::AskUser;
+    }
+
+    let engine = RecommendationEngine;
+    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    assert!(recommendation.proposed_operations.is_empty(), "AskUser must produce zero mutations");
+}
+
+#[test]
+fn test_phase15_no_classification_result_no_fallback() {
+    let dir = tempdir().unwrap();
+    let scope = create_test_scope(&dir);
+
+    let parser = TaskIntentParser::new(scope.clone());
+    let intent = parser.parse("Organize by category").expect("should parse");
+
+    let analyzer = EvidenceAnalyzer;
+    let mut analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    // Clear classification results
+    analysis.classification_results.clear();
+
+    let engine = RecommendationEngine;
+    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    assert!(recommendation.proposed_categories.is_empty(), "No classification result must not trigger content-type fallback for categories");
+    assert!(recommendation.proposed_operations.is_empty(), "No classification result must not trigger content-type fallback for operations");
 }
 

@@ -72,7 +72,7 @@ fn test_plan_generation_basic() {
 }
 
 #[test]
-fn test_plan_has_create_dir_operations() {
+fn test_plan_no_operations_for_flat_scope() {
     let dir = tempdir().unwrap();
     let scope = create_flat_scope(&dir);
 
@@ -84,23 +84,30 @@ fn test_plan_has_create_dir_operations() {
     let analyzer = EvidenceAnalyzer::default();
     let analysis = analyzer.analyze(&intent).expect("should analyze");
 
+    // Flat scope with no existing directories produces no classification result
+    assert!(analysis.candidate_categories.is_empty());
+    assert!(analysis.classification_results.is_empty());
+
     let engine = RecommendationEngine;
     let recommendation = engine
         .recommend(&intent, &analysis)
         .expect("should recommend");
+
+    // No classification result means no operations proposed (no fallback)
+    assert!(
+        recommendation.proposed_operations.is_empty(),
+        "Flat scope with no classification result must produce zero operations"
+    );
 
     let generator = PlanGenerator;
     let plan = generator
         .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
-    let has_create = plan
-        .operations
-        .iter()
-        .any(|op| matches!(op, FileSystemOperation::CreateDir { .. }));
+    // Plan must have no operations (zero mutation)
     assert!(
-        has_create,
-        "Plan should include CreateDir operations for flat scope"
+        plan.operations.is_empty(),
+        "Plan for flat scope with no classification must have no operations"
     );
 }
 
@@ -381,7 +388,7 @@ fn test_plan_preserves_existing_dir_structure() {
 #[test]
 fn test_plan_category_dir_resolution() {
     let dir = tempdir().unwrap();
-    let scope = create_flat_scope(&dir);
+    let scope = create_test_scope(&dir);
 
     let parser = TaskIntentParser::new(scope.clone());
     let intent = parser.parse("Organize by category").expect("should parse");
@@ -399,22 +406,16 @@ fn test_plan_category_dir_resolution() {
         .generate(&recommendation, &analysis)
         .expect("should generate plan");
 
-    // Should have CreateDir operations for new category directories
-    let created_dirs: Vec<_> = plan
-        .operations
-        .iter()
-        .filter_map(|op| {
-            if let FileSystemOperation::CreateDir { path } = op {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    assert!(!created_dirs.is_empty());
-    for dir_path in &created_dirs {
-        assert!(dir_path.starts_with(&scope));
+    // All operations with destinations must be within scope
+    for op in &plan.operations {
+        if let Some(dest) = op.dest_path() {
+            assert!(
+                dest.starts_with(&scope),
+                "Destination {} must be within scope {}",
+                dest.display(),
+                scope.display()
+            );
+        }
     }
 }
 
