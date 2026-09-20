@@ -5,6 +5,8 @@ pub mod parser;
 pub mod provider;
 
 #[cfg(feature = "network")]
+pub mod ollama;
+#[cfg(feature = "network")]
 pub mod openai;
 
 #[allow(unused_imports)]
@@ -20,4 +22,10 @@ pub use provider::{ChatMessage, LlmError, LlmProvider};
 
 #[cfg(feature = "network")]
 #[allow(unused_imports)]
+pub use ollama::OllamaProvider;
+#[cfg(feature = "network")]
+#[allow(unused_imports)]
 pub use openai::OpenAiCompatibleProvider;
+
+#[allow(unused_imports)]
+pub use chat::create_provider;

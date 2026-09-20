@@ -204,6 +204,29 @@ fi schema > schema.json
 # Use with any JSON Schema validator
 ```
 
+## Organize (AI-Powered Folder Sorting)
+
+`folder-intelligence` also includes an `organize` command that classifies and moves files based on existing category directories, with optional LLM assistance.
+
+```bash
+# Run with default rule-based classification
+fi organize .
+
+# Dry run (preview only, no filesystem changes)
+fi organize . --dry-run
+
+# Skip confirmation prompt
+fi organize . --yes
+```
+
+The organize pipeline follows this flow:
+
+```text
+Scan → Classify → Recommend → Plan → Validate → Preview → [User Confirm] → Execute → Verify
+```
+
+No files are modified until you confirm the preview. See [`docs/USAGE.md`](docs/USAGE.md) for the full usage guide.
+
 ## Development
 
 ### Run tests
@@ -237,12 +260,14 @@ src/
 
 ### Designed for Future Extension
 
-The codebase is structured to support (not yet implemented):
+The codebase also supports (implemented):
+- **Action planner** — Filesystem operations based on evidence (`organize` command)
+- **AI interpretation** — LLM-based classification on evidence (Ollama, OpenAI-compatible)
+
+And is structured to support (not yet implemented):
 - **SQLite index** — Persistent evidence storage
-- **AI interpretation** — LLM-based classification on evidence
 - **Progressive evidence** — Incremental scanning, change detection
 - **MCP server** — Model Context Protocol for AI agents
-- **Action planner** — Filesystem operations based on evidence
 
 ## License
 

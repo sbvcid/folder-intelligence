@@ -8,6 +8,7 @@ pub mod plan;
 pub mod policy;
 pub mod recommendation;
 pub mod validate;
+pub mod verification;
 
 #[allow(unused_imports)]
 pub use analysis::{
@@ -26,11 +27,9 @@ pub use executor::{
     OperationLog, RecoveryResult, UndoConflict, UndoLogEntry, UndoResult,
 };
 #[allow(unused_imports)]
-pub use operation_guard::{
-    ExecutionResult, FileMetadata, OperationGuard, Precondition, ScopeLock,
-};
-#[allow(unused_imports)]
 pub use intent::{CleanRule, ConstraintSet, Goal, IntentParseError, TaskIntent, TaskIntentParser};
+#[allow(unused_imports)]
+pub use operation_guard::{ExecutionResult, FileMetadata, OperationGuard, Precondition, ScopeLock};
 #[allow(unused_imports)]
 pub use pipeline::{ApplyOptions, Pipeline, PipelineError, PipelineOptions, PipelineResult};
 #[allow(unused_imports)]
@@ -50,4 +49,9 @@ pub use recommendation::{
 pub use validate::{
     PlanPreview, PlanValidator, ValidatedOperation, ValidationResult, ValidationStatus,
     ValidationSummary,
+};
+#[allow(unused_imports)]
+pub use verification::{
+    ExecutionVerificationResult, ExecutionVerifier, FilesystemState, VerificationCheck,
+    VerificationStatus, VerificationSummary,
 };

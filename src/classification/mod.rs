@@ -2,6 +2,7 @@ pub mod ai_provider;
 pub mod comparator;
 pub mod decision;
 pub mod input;
+pub mod llm_classifier;
 pub mod mock_ai;
 pub mod processor;
 pub mod result;
@@ -23,6 +24,11 @@ pub use decision::DecisionEngine;
 pub use input::{
     CandidateEvidence, CandidateSummary, ClassificationConfig, ClassificationInput, TargetEvidence,
     UserHints, MAX_CANDIDATES, SAMPLE_CHILD_DIRS,
+};
+#[allow(unused_imports)]
+pub use llm_classifier::{
+    build_classification_request, FileObservation, LlmClassificationError, LlmClassificationItem,
+    LlmClassificationOutput, LlmClassificationRequest, LlmClassifier,
 };
 #[allow(unused_imports)]
 pub use mock_ai::MockAiClassifier;

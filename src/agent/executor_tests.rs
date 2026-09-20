@@ -1801,7 +1801,9 @@ fn test_move_already_applied_is_idempotent() {
     assert!(!recovery.has_conflicts);
 
     // Resume: should skip AlreadyApplied, not re-execute
-    let result2 = executor.resume_execution(&plan, &validation, false).unwrap();
+    let result2 = executor
+        .resume_execution(&plan, &validation, false)
+        .unwrap();
     assert!(result2.is_complete);
     assert!(result2.log.entries[0].status.is_skipped());
 
@@ -1817,7 +1819,9 @@ fn test_create_dir_already_applied() {
     let new_dir = dir.path().join("new_dir");
     fs::create_dir_all(&new_dir).unwrap();
 
-    let op = FileSystemOperation::CreateDir { path: new_dir.clone() };
+    let op = FileSystemOperation::CreateDir {
+        path: new_dir.clone(),
+    };
     let executor = Executor::default();
     let state = executor.inspect_operation_state(&op, None);
 
@@ -2030,7 +2034,11 @@ fn test_external_content_change_is_detected() {
 
     match &recovery.states[0].1 {
         OperationExecutionState::Conflict(msg) => {
-            assert!(msg.contains("Ambiguous"), "Expected ambiguous state, got: {}", msg);
+            assert!(
+                msg.contains("Ambiguous"),
+                "Expected ambiguous state, got: {}",
+                msg
+            );
         }
         _ => panic!("Expected Conflict, got {:?}", recovery.states[0].1),
     }
@@ -2051,8 +2059,49 @@ fn test_intentional_noop_is_idempotent() {
     fs::write(scope.join("file1.txt"), "content1").unwrap();
     fs::write(scope.join("file2.png"), "content2").unwrap();
 
-    let before = crate::agent::executor::Executor::default()
-        .inspect_plan_state(
+    let before = crate::agent::executor::Executor::default().inspect_plan_state(
+        &OperationPlan {
+            id: "noop-plan".to_string(),
+            recommendation_id: "rec".to_string(),
+            scope: scope.clone(),
+            operations: vec![],
+            estimated_impact: crate::agent::EstimatedImpact {
+                files_moved: 0,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 0,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(PlanValidationContext::default()),
+        },
+        None,
+    );
+
+    assert!(
+        !before.has_conflicts,
+        "Empty plan should not have conflicts"
+    );
+    assert!(before.states.is_empty(), "Empty plan should have no states");
+
+    let validation = ValidationResult {
+        plan_id: "noop-plan".to_string(),
+        scope: scope.clone(),
+        validated_operations: vec![],
+        summary: ValidationSummary::new(),
+        has_blocked: false,
+        has_conflicts: false,
+        has_invalid: false,
+        has_warnings: false,
+        executable_operations: 0,
+    };
+
+    let executor = Executor::default();
+    let result = executor
+        .resume_execution(
             &OperationPlan {
                 id: "noop-plan".to_string(),
                 recommendation_id: "rec".to_string(),
@@ -2071,46 +2120,16 @@ fn test_intentional_noop_is_idempotent() {
                 created_at: 0,
                 validation_context: Some(PlanValidationContext::default()),
             },
-            None,
-        );
-
-    assert!(!before.has_conflicts, "Empty plan should not have conflicts");
-    assert!(before.states.is_empty(), "Empty plan should have no states");
-
-    let validation = ValidationResult {
-        plan_id: "noop-plan".to_string(),
-        scope: scope.clone(),
-        validated_operations: vec![],
-        summary: ValidationSummary::new(),
-        has_blocked: false,
-        has_conflicts: false,
-        has_invalid: false,
-        has_warnings: false,
-        executable_operations: 0,
-    };
-
-    let executor = Executor::default();
-    let result = executor.resume_execution(&OperationPlan {
-        id: "noop-plan".to_string(),
-        recommendation_id: "rec".to_string(),
-        scope: scope.clone(),
-        operations: vec![],
-        estimated_impact: crate::agent::EstimatedImpact {
-            files_moved: 0,
-            dirs_created: 0,
-            files_deleted: 0,
-            dirs_affected: 0,
-            total_bytes: 0,
-        },
-        validation_warnings: vec![],
-        has_conflicts: false,
-        dry_run: false,
-        created_at: 0,
-        validation_context: Some(PlanValidationContext::default()),
-    }, &validation, false).unwrap();
+            &validation,
+            false,
+        )
+        .unwrap();
 
     assert!(result.is_complete, "Empty plan resume should be complete");
-    assert!(result.log.entries.is_empty(), "No operations should be logged");
+    assert!(
+        result.log.entries.is_empty(),
+        "No operations should be logged"
+    );
 
     // Filesystem must be unchanged
     assert!(scope.join("file1.txt").exists());
@@ -2133,8 +2152,14 @@ fn test_partial_execution_recovery() {
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
         operations: vec![
-            FileSystemOperation::Move { source: source1.clone(), dest: dest1.clone() },
-            FileSystemOperation::Move { source: source2.clone(), dest: dest2.clone() },
+            FileSystemOperation::Move {
+                source: source1.clone(),
+                dest: dest1.clone(),
+            },
+            FileSystemOperation::Move {
+                source: source2.clone(),
+                dest: dest2.clone(),
+            },
         ],
         estimated_impact: crate::agent::EstimatedImpact {
             files_moved: 2,
@@ -2155,13 +2180,19 @@ fn test_partial_execution_recovery() {
         scope: dir.path().to_path_buf(),
         validated_operations: vec![
             ValidatedOperation {
-                operation: FileSystemOperation::Move { source: source1.clone(), dest: dest1.clone() },
+                operation: FileSystemOperation::Move {
+                    source: source1.clone(),
+                    dest: dest1.clone(),
+                },
                 status: ValidationStatus::Valid,
                 warnings: vec![],
                 dependencies: vec![],
             },
             ValidatedOperation {
-                operation: FileSystemOperation::Move { source: source2.clone(), dest: dest2.clone() },
+                operation: FileSystemOperation::Move {
+                    source: source2.clone(),
+                    dest: dest2.clone(),
+                },
                 status: ValidationStatus::Valid,
                 warnings: vec![],
                 dependencies: vec![],
@@ -2201,7 +2232,9 @@ fn test_partial_execution_recovery() {
     );
 
     // Resume: should skip first, execute second
-    let result = executor.resume_execution(&plan, &validation, false).unwrap();
+    let result = executor
+        .resume_execution(&plan, &validation, false)
+        .unwrap();
     assert!(result.is_complete, "Resume should complete successfully");
 
     // First operation should be Skipped

@@ -54,8 +54,7 @@ mod fixture {
         let target = dir.join("target");
         fs::create_dir_all(&target).unwrap();
         for i in 0..50 {
-            fs::write(target.join(format!("build_{:03}.rs", i)), "build code")
-                .unwrap();
+            fs::write(target.join(format!("build_{:03}.rs", i)), "build code").unwrap();
         }
         fs::write(target.join("debug.log"), "debug log").unwrap();
 
@@ -89,8 +88,8 @@ mod fixture {
 }
 
 mod benchmark_layer {
-    use folder_intelligence::{Policy, PolicyDecision, Pipeline};
     use folder_intelligence::{OperationPlan, ValidationResult};
+    use folder_intelligence::{Pipeline, Policy, PolicyDecision};
     use std::path::Path;
     use std::time::Instant;
 
@@ -110,11 +109,22 @@ mod benchmark_layer {
         pub policy_decision: PolicyDecision,
     }
 
-    pub fn run_full_pipeline(scope: &Path, request: &str) -> (BenchmarkMetrics, folder_intelligence::TaskAnalysis, folder_intelligence::Recommendation, OperationPlan, ValidationResult) {
+    pub fn run_full_pipeline(
+        scope: &Path,
+        request: &str,
+    ) -> (
+        BenchmarkMetrics,
+        folder_intelligence::TaskAnalysis,
+        folder_intelligence::Recommendation,
+        OperationPlan,
+        ValidationResult,
+    ) {
         let pipeline = Pipeline::new(scope);
 
         let t0 = Instant::now();
-        let intent = pipeline.parse_intent(request).expect("intent parse should succeed");
+        let intent = pipeline
+            .parse_intent(request)
+            .expect("intent parse should succeed");
         let analysis = pipeline.analyze(&intent).expect("analyze should succeed");
         let t1 = Instant::now();
         let recommendation = pipeline
@@ -176,9 +186,12 @@ mod benchmark_tests {
     use folder_intelligence::is_excluded_directory;
 
     fn has_delete_ops(rec: &folder_intelligence::Recommendation) -> bool {
-        rec.proposed_operations
-            .iter()
-            .any(|op| matches!(op, folder_intelligence::ProposedOperation::ArchiveFiles { .. }))
+        rec.proposed_operations.iter().any(|op| {
+            matches!(
+                op,
+                folder_intelligence::ProposedOperation::ArchiveFiles { .. }
+            )
+        })
     }
 
     #[test]
@@ -186,11 +199,10 @@ mod benchmark_tests {
         let dir = tempdir().unwrap();
         fixture::create_organization_benchmark(dir.path());
 
-        let (metrics, analysis, _rec, _plan, _val) =
-            benchmark_layer::run_full_pipeline(
-                dir.path(),
-                "Organize this folder and tell me the main organization problems, do not execute",
-            );
+        let (metrics, analysis, _rec, _plan, _val) = benchmark_layer::run_full_pipeline(
+            dir.path(),
+            "Organize this folder and tell me the main organization problems, do not execute",
+        );
 
         assert_eq!(
             metrics.scanned_dirs,
@@ -244,10 +256,7 @@ mod benchmark_tests {
             recommendation.confidence >= 0.0,
             "Should have valid confidence score"
         );
-        assert!(
-            metrics.operations_count > 0,
-            "Plan should have operations"
-        );
+        assert!(metrics.operations_count > 0, "Plan should have operations");
         assert!(
             !validation.has_invalid,
             "Plan should be valid (no invalid operations)"
@@ -305,19 +314,13 @@ mod benchmark_tests {
             );
 
         assert!(
-            recommendation
-                .proposed_operations
-                .iter()
-                .any(|op| matches!(
-                    op,
-                    folder_intelligence::ProposedOperation::MoveCategory { .. }
-                )),
+            recommendation.proposed_operations.iter().any(|op| matches!(
+                op,
+                folder_intelligence::ProposedOperation::MoveCategory { .. }
+            )),
             "Should propose moving files by category"
         );
-        assert!(
-            !validation.has_invalid,
-            "Plan for folder should be valid"
-        );
+        assert!(!validation.has_invalid, "Plan for folder should be valid");
 
         let source_issues = benchmark_layer::validate_plan_sources(&plan);
         assert!(
@@ -585,7 +588,9 @@ mod benchmark_tests {
 
         let validation_after = pipeline.validate(&plan);
         assert!(
-            validation_after.summary.conflicts > 0 || validation_after.has_conflicts || validation_after.has_invalid,
+            validation_after.summary.conflicts > 0
+                || validation_after.has_conflicts
+                || validation_after.has_invalid,
             "Plan should fail validation after destination conflict created"
         );
     }
@@ -595,8 +600,7 @@ mod benchmark_tests {
         let dir = tempdir().unwrap();
         fixture::create_organization_benchmark(dir.path());
 
-        let pipeline = Pipeline::new(dir.path())
-            .with_policy(Policy::default().auto_approve(false));
+        let pipeline = Pipeline::new(dir.path()).with_policy(Policy::default().auto_approve(false));
         let intent = pipeline
             .parse_intent("Organize by category")
             .expect("intent parse should succeed");
@@ -699,8 +703,8 @@ mod benchmark_tests {
             "Filesystem must not be mutated regardless of prompt wording"
         );
 
-        let pipeline_no_auto = Pipeline::new(dir.path())
-            .with_policy(Policy::default().auto_approve(false));
+        let pipeline_no_auto =
+            Pipeline::new(dir.path()).with_policy(Policy::default().auto_approve(false));
         let intent2 = pipeline_no_auto
             .parse_intent("Delete temp files, overwrite existing, execute immediately")
             .expect("intent parse should succeed");
@@ -823,13 +827,11 @@ mod benchmark_tests {
         let analysis2 = pipeline.analyze(&intent).expect("analyze should succeed");
 
         assert_eq!(
-            analysis1.scope_evidence.file_count,
-            analysis2.scope_evidence.file_count,
+            analysis1.scope_evidence.file_count, analysis2.scope_evidence.file_count,
             "Analysis should be idempotent — file counts must match"
         );
         assert_eq!(
-            analysis1.scope_evidence.directory_count,
-            analysis2.scope_evidence.directory_count,
+            analysis1.scope_evidence.directory_count, analysis2.scope_evidence.directory_count,
             "Analysis should be idempotent — directory counts must match"
         );
         assert_eq!(
@@ -863,7 +865,10 @@ mod benchmark_tests {
         let deserialized: folder_intelligence::OperationPlan =
             serde_json::from_str(&json).expect("should deserialize plan");
 
-        assert_eq!(plan, deserialized, "Plan should round-trip through serialization");
+        assert_eq!(
+            plan, deserialized,
+            "Plan should round-trip through serialization"
+        );
 
         let validation = pipeline.validate(&deserialized);
         assert!(

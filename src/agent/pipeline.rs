@@ -10,6 +10,8 @@ use crate::agent::recommendation::{
     ProposedOperation, Recommendation, RecommendationEngine, RecommendationError,
 };
 use crate::agent::validate::{PlanPreview, PlanValidator, ValidationResult};
+use crate::agent::verification::ExecutionVerifier;
+use crate::classification::LlmClassifier;
 use crate::evidence::ScanLimits;
 use crate::scanner::Scanner;
 use std::path::{Path, PathBuf};
@@ -30,7 +32,7 @@ impl Default for Pipeline {
     fn default() -> Self {
         Pipeline {
             parser: TaskIntentParser::default(),
-            analyzer: EvidenceAnalyzer,
+            analyzer: EvidenceAnalyzer::default(),
             recommender: RecommendationEngine,
             clarifier: ClarificationEngine,
             planner: PlanGenerator,
@@ -45,7 +47,7 @@ impl Pipeline {
     pub fn new(scope: &Path) -> Self {
         Pipeline {
             parser: TaskIntentParser::new(scope.to_path_buf()),
-            analyzer: EvidenceAnalyzer,
+            analyzer: EvidenceAnalyzer::default(),
             recommender: RecommendationEngine,
             clarifier: ClarificationEngine,
             planner: PlanGenerator,
@@ -58,6 +60,12 @@ impl Pipeline {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_policy(mut self, policy: Policy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_llm_classifier(mut self, classifier: LlmClassifier) -> Self {
+        self.analyzer = self.analyzer.with_llm_classifier(classifier);
         self
     }
 
@@ -185,22 +193,27 @@ impl Pipeline {
                 crate::classification::ClassificationDecision::MoveExisting => {
                     if let Some(ref selected) = classification.selected_candidate {
                         // Find the candidate name for the selected path
-                        let expected_category = analysis.candidate_categories.iter()
+                        let expected_category = analysis
+                            .candidate_categories
+                            .iter()
                             .find(|c| c.path == *selected)
                             .map(|c| c.name.clone());
 
                         if let Some(ref expected_name) = expected_category {
                             // Check that at least one MoveCategory operation targets the expected category
-                            let has_matching_move = recommendation.proposed_operations.iter().any(|op| {
-                                if let ProposedOperation::MoveCategory { to_category, .. } = op {
-                                    to_category.to_lowercase() == expected_name.to_lowercase()
-                                        || expected_name.to_lowercase().contains(to_category)
-                                        || to_category.to_lowercase().contains(expected_name)
-                                } else {
-                                    false
-                                }
-                            });
-                            if !has_matching_move && !recommendation.proposed_operations.is_empty() {
+                            let has_matching_move =
+                                recommendation.proposed_operations.iter().any(|op| {
+                                    if let ProposedOperation::MoveCategory { to_category, .. } = op
+                                    {
+                                        to_category.to_lowercase() == expected_name.to_lowercase()
+                                            || expected_name.to_lowercase().contains(to_category)
+                                            || to_category.to_lowercase().contains(expected_name)
+                                    } else {
+                                        false
+                                    }
+                                });
+                            if !has_matching_move && !recommendation.proposed_operations.is_empty()
+                            {
                                 return Err(PipelineError::Plan(PlanError::ConflictingOperations(
                                     format!("Integrity violation: Classification MoveExisting targets '{}' but recommendation moves to different category", expected_name),
                                 )));
@@ -208,10 +221,15 @@ impl Pipeline {
                         }
 
                         // Also verify proposed_categories has matching target_path
-                        let has_matching_category = recommendation.proposed_categories.iter().any(|cat| {
-                            cat.target_path.as_ref().map(|p| p == selected).unwrap_or(false)
-                        });
-                        if !has_matching_category && !recommendation.proposed_categories.is_empty() {
+                        let has_matching_category =
+                            recommendation.proposed_categories.iter().any(|cat| {
+                                cat.target_path
+                                    .as_ref()
+                                    .map(|p| p == selected)
+                                    .unwrap_or(false)
+                            });
+                        if !has_matching_category && !recommendation.proposed_categories.is_empty()
+                        {
                             return Err(PipelineError::Plan(PlanError::ConflictingOperations(
                                 format!("Integrity violation: Classification MoveExisting targets candidate but recommendation proposes different category"),
                             )));
@@ -220,16 +238,20 @@ impl Pipeline {
                 }
                 crate::classification::ClassificationDecision::CreateCategory => {
                     if let Some(ref proposed_name) = classification.proposed_category_name {
-                        let expected_normalized = proposed_name.to_lowercase().replace(' ', "_").replace('-', "_");
+                        let expected_normalized = proposed_name
+                            .to_lowercase()
+                            .replace(' ', "_")
+                            .replace('-', "_");
                         // Ensure CreateCategory operation matches
-                        let has_matching_create = recommendation.proposed_operations.iter().any(|op| {
-                            if let ProposedOperation::CreateCategory { name, .. } = op {
-                                name.to_lowercase() == expected_normalized
-                                    || expected_normalized.contains(name)
-                            } else {
-                                false
-                            }
-                        });
+                        let has_matching_create =
+                            recommendation.proposed_operations.iter().any(|op| {
+                                if let ProposedOperation::CreateCategory { name, .. } = op {
+                                    name.to_lowercase() == expected_normalized
+                                        || expected_normalized.contains(name)
+                                } else {
+                                    false
+                                }
+                            });
                         if !has_matching_create && !recommendation.proposed_operations.is_empty() {
                             return Err(PipelineError::Plan(PlanError::ConflictingOperations(
                                 format!("Integrity violation: Classification CreateCategory proposes '{}' but recommendation creates different category", proposed_name),
@@ -252,7 +274,8 @@ impl Pipeline {
                 ProposedOperation::MoveCategory { to_category, .. } => {
                     // Check if plan has a Move operation targeting this category
                     let has_matching_move = plan.operations.iter().any(|plan_op| {
-                        if let crate::agent::plan::FileSystemOperation::Move { dest, .. } = plan_op {
+                        if let crate::agent::plan::FileSystemOperation::Move { dest, .. } = plan_op
+                        {
                             // Check if dest is within the expected category directory
                             let path_str = dest.to_string_lossy().to_lowercase();
                             let cat_lower = to_category.to_lowercase();
@@ -270,7 +293,8 @@ impl Pipeline {
                 ProposedOperation::CreateCategory { name, .. } => {
                     // Check if plan has a CreateDir for this category
                     let has_matching_create = plan.operations.iter().any(|plan_op| {
-                        if let crate::agent::plan::FileSystemOperation::CreateDir { path } = plan_op {
+                        if let crate::agent::plan::FileSystemOperation::CreateDir { path } = plan_op
+                        {
                             let path_str = path.to_string_lossy().to_lowercase();
                             let name_lower = name.to_lowercase();
                             path_str.contains(&name_lower)
@@ -361,12 +385,21 @@ impl Pipeline {
                 can_undo: false,
                 undo_supported_count: validation.executable_operations,
                 undo_unsupported_count: 0,
+                execution_verification: None,
             });
         }
 
-        self.executor
+        let before_state = ExecutionVerifier::capture_state(&plan.scope);
+
+        let mut result = self
+            .executor
             .execute_with_options(plan, validation, options.force)
-            .map_err(PipelineError::Apply)
+            .map_err(PipelineError::Apply)?;
+
+        let verification = ExecutionVerifier.verify(plan, &result.log, &before_state);
+        result.execution_verification = Some(verification);
+
+        Ok(result)
     }
 
     /// Apply a plan that has received explicit approval.
@@ -412,12 +445,21 @@ impl Pipeline {
                 can_undo: false,
                 undo_supported_count: fresh_validation.executable_operations,
                 undo_unsupported_count: 0,
+                execution_verification: None,
             });
         }
 
-        self.executor
+        let before_state = ExecutionVerifier::capture_state(&plan.scope);
+
+        let mut result = self
+            .executor
             .execute_with_options(plan, &fresh_validation, options.force)
-            .map_err(PipelineError::Apply)
+            .map_err(PipelineError::Apply)?;
+
+        let verification = ExecutionVerifier.verify(plan, &result.log, &before_state);
+        result.execution_verification = Some(verification);
+
+        Ok(result)
     }
 
     /// Create an approval token for a plan, after policy evaluation.
@@ -458,11 +500,7 @@ impl Pipeline {
     /// is only consulted as supplementary evidence. Returns the execution
     /// state for each operation without mutating the filesystem.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn inspect_plan(
-        &self,
-        plan: &OperationPlan,
-        log: Option<&OperationLog>,
-    ) -> RecoveryResult {
+    pub fn inspect_plan(&self, plan: &OperationPlan, log: Option<&OperationLog>) -> RecoveryResult {
         self.executor.inspect_plan_state(plan, log)
     }
 
@@ -669,7 +707,10 @@ mod tests {
     use super::*;
     use crate::agent::plan::FileSystemOperation;
     use crate::agent::validate::{ValidatedOperation, ValidationStatus};
+    use crate::classification::{ClassificationDecision, ConfidenceBand};
+    use crate::llm::provider::{ChatMessage, LlmError, LlmProvider};
     use std::fs;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     #[test]
@@ -2248,5 +2289,402 @@ mod tests {
             }
         }
         files
+    }
+
+    #[derive(Clone)]
+    struct TestLlmProvider {
+        success_response: Option<String>,
+    }
+
+    impl LlmProvider for TestLlmProvider {
+        fn chat(&self, _messages: &[ChatMessage]) -> Result<String, LlmError> {
+            match &self.success_response {
+                Some(s) => Ok(s.clone()),
+                None => Err(LlmError::ProviderError("Mock provider error".to_string())),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "test-llm"
+        }
+    }
+
+    fn make_llm_classifier(json_response: &str) -> LlmClassifier {
+        let provider = TestLlmProvider {
+            success_response: Some(json_response.to_string()),
+        };
+        LlmClassifier::new(Arc::new(provider))
+    }
+
+    fn make_error_llm_classifier() -> LlmClassifier {
+        let provider = TestLlmProvider {
+            success_response: None,
+        };
+        LlmClassifier::new(Arc::new(provider))
+    }
+
+    fn create_llm_test_scope(dir: &tempfile::TempDir) -> PathBuf {
+        let scope = dir.path().join("downloads");
+        fs::create_dir_all(&scope).unwrap();
+
+        fs::write(scope.join("readme.txt"), "content").unwrap();
+
+        fs::create_dir_all(scope.join("Documents")).unwrap();
+
+        scope
+    }
+
+    fn pipeline_with_llm(scope: &Path, json_response: &str) -> Pipeline {
+        let classifier = make_llm_classifier(json_response);
+        Pipeline::new(scope).with_llm_classifier(classifier)
+    }
+
+    #[test]
+    fn test_llm_organize_dry_run() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+        );
+
+        let options = PipelineOptions {
+            dry_run: true,
+            execute: false,
+            force: false,
+        };
+
+        let result = pipeline
+            .run("Organize this folder by category", &options)
+            .unwrap();
+        assert!(result.apply.is_none());
+        assert!(result.plan.dry_run);
+        assert!(!result.preview.is_empty());
+        assert!(!result.plan.operations.is_empty());
+    }
+
+    #[test]
+    fn test_llm_organize_full_execution() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+        );
+
+        let options = PipelineOptions {
+            dry_run: false,
+            execute: true,
+            force: false,
+        };
+
+        let result = pipeline
+            .run("Organize this folder by category", &options)
+            .unwrap();
+        assert!(result.apply.is_some());
+        assert!(result.apply.as_ref().unwrap().is_complete);
+    }
+
+    #[test]
+    fn test_llm_classification_move_existing() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+        );
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+
+        let classification = analysis.classification_results.first().unwrap();
+        assert_eq!(
+            classification.decision,
+            ClassificationDecision::MoveExisting
+        );
+        assert!(classification.selected_candidate.is_some());
+        assert_eq!(
+            classification.proposed_category_name.as_deref(),
+            Some("Documents")
+        );
+
+        let has_move = recommendation
+            .proposed_operations
+            .iter()
+            .any(|op| matches!(op, ProposedOperation::MoveCategory { to_category, .. } if to_category == "Documents"));
+        assert!(
+            has_move,
+            "recommendation should have MoveCategory to Documents"
+        );
+    }
+
+    #[test]
+    fn test_llm_classification_leave_unclassified() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(&scope, r#"[]"#);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+
+        let classification = analysis.classification_results.first().unwrap();
+        assert_eq!(
+            classification.decision,
+            ClassificationDecision::LeaveUnclassified
+        );
+        assert!(classification.selected_candidate.is_none());
+
+        let has_mutation = recommendation.proposed_operations.iter().any(|op| {
+            matches!(
+                op,
+                ProposedOperation::MoveCategory { .. }
+                    | ProposedOperation::CreateCategory { .. }
+                    | ProposedOperation::ArchiveFiles { .. }
+            )
+        });
+        assert!(
+            !has_mutation,
+            "no mutation operations for LeaveUnclassified"
+        );
+    }
+
+    #[test]
+    fn test_llm_provider_error_stops_pipeline() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let classifier = make_error_llm_classifier();
+        let pipeline = Pipeline::new(&scope).with_llm_classifier(classifier);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let result = pipeline.analyze(&intent);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            PipelineError::Analysis(AnalyzerError::ClassificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn test_llm_classifier_injection_via_pipeline() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let classifier = make_llm_classifier(
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.9}]"#,
+        );
+        let pipeline = Pipeline::new(&scope).with_llm_classifier(classifier);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        let classification = analysis.classification_results.first().unwrap();
+        assert_eq!(
+            classification.decision,
+            ClassificationDecision::MoveExisting
+        );
+        assert!(
+            classification.confidence >= 0.8,
+            "confidence from LLM should be 0.9, got {}",
+            classification.confidence
+        );
+    }
+
+    #[test]
+    fn test_llm_classification_integrity_passes() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+        );
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+
+        let validation = pipeline.validate(&plan);
+        assert!(!validation.has_invalid);
+        assert!(!validation.has_conflicts);
+    }
+
+    #[test]
+    fn test_non_llm_regression_rule_based() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = Pipeline::new(&scope);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        let classification = analysis.classification_results.first().unwrap();
+        assert!(
+            classification.provider.is_none(),
+            "rule-based classification should not set provider"
+        );
+        assert!(
+            classification.model.is_none(),
+            "rule-based classification should not set model"
+        );
+    }
+
+    #[test]
+    fn test_llm_classification_empty_candidates() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("empty_scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("doc.pdf"), "content").unwrap();
+
+        let classifier =
+            make_llm_classifier(r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95}]"#);
+        let pipeline = Pipeline::new(&scope).with_llm_classifier(classifier);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        assert!(
+            analysis.candidate_categories.is_empty(),
+            "no subdirectories means no candidate categories"
+        );
+        assert!(
+            analysis.classification_results.is_empty(),
+            "no candidates means no classification results"
+        );
+    }
+
+    #[test]
+    fn test_llm_classification_confidence_preserved() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+        );
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        let classification = analysis.classification_results.first().unwrap();
+        assert_eq!(classification.confidence, 0.95);
+        assert_eq!(classification.confidence_band, ConfidenceBand::High);
+    }
+
+    #[test]
+    fn test_llm_classification_unsupported_category() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"InventedCategory","confidence":0.9}]"#,
+        );
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let result = pipeline.analyze(&intent);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            PipelineError::Analysis(AnalyzerError::ClassificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn test_llm_classification_malformed_json() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let pipeline = pipeline_with_llm(&scope, r#"this is not valid json"#);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let result = pipeline.analyze(&intent);
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            PipelineError::Analysis(AnalyzerError::ClassificationFailed(_))
+        ));
+    }
+
+    #[test]
+    fn test_llm_dry_run_no_mutation() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        let source_file = scope.join("readme.txt");
+        assert!(source_file.exists());
+
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+        );
+
+        let files_before = collect_files(&scope);
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        let validation = pipeline.validate(&plan);
+
+        let result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &ApplyOptions {
+                    force: false,
+                    dry_run: true,
+                },
+            )
+            .unwrap();
+
+        assert!(!result.is_complete, "dry-run must not be complete");
+        assert!(
+            result.log.entries.is_empty(),
+            "dry-run must not log operations"
+        );
+
+        let files_after = collect_files(&scope);
+        assert_eq!(
+            files_before, files_after,
+            "dry-run must not mutate filesystem"
+        );
+        assert!(
+            source_file.exists(),
+            "source file must still exist after dry-run"
+        );
     }
 }

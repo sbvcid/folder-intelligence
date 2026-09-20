@@ -277,88 +277,53 @@ impl RecommendationEngine {
 
         let classification = analysis.classification_results.first();
 
-        match classification {
-            Some(cr) => {
-                use crate::classification::ClassificationDecision;
-                match cr.decision {
-                    ClassificationDecision::MoveExisting => {
-                        if let Some(ref selected) = cr.selected_candidate {
-                            let candidate = analysis.candidate_categories.iter().find(|c| c.path == *selected);
-                            if let Some(cand) = candidate {
-                                categories.push(ProposedCategory {
-                                    name: cand.name.clone(),
-                                    purpose: cand.name.clone(),
-                                    target_content_types: content_groups.iter().map(|g| g.extension.clone()).collect(),
-                                    confidence: cr.confidence,
-                                    is_existing: true,
-                                    target_path: Some(selected.clone()),
-                                });
-                            }
-                        }
-                    }
-                    ClassificationDecision::CreateCategory => {
-                        if let Some(ref proposed_name) = cr.proposed_category_name {
-                            let category_name = Self::normalize_category_name(proposed_name);
+        if let Some(cr) = classification {
+            use crate::classification::ClassificationDecision;
+            match cr.decision {
+                ClassificationDecision::MoveExisting => {
+                    if let Some(ref selected) = cr.selected_candidate {
+                        let candidate = analysis
+                            .candidate_categories
+                            .iter()
+                            .find(|c| c.path == *selected);
+                        if let Some(cand) = candidate {
                             categories.push(ProposedCategory {
-                                name: category_name.clone(),
-                                purpose: proposed_name.clone(),
-                                target_content_types: content_groups.iter().map(|g| g.extension.clone()).collect(),
+                                name: cand.name.clone(),
+                                purpose: cand.name.clone(),
+                                target_content_types: content_groups
+                                    .iter()
+                                    .map(|g| g.extension.clone())
+                                    .collect(),
                                 confidence: cr.confidence,
-                                is_existing: false,
-                                target_path: None,
+                                is_existing: true,
+                                target_path: Some(selected.clone()),
                             });
                         }
                     }
-                    ClassificationDecision::LeaveUnclassified => {
-                        // No categories proposed for LeaveUnclassified
-                    }
-                    ClassificationDecision::AskUser => {
-                        // No categories proposed for AskUser; will generate unresolved question
+                }
+                ClassificationDecision::CreateCategory => {
+                    if let Some(ref proposed_name) = cr.proposed_category_name {
+                        let category_name = Self::normalize_category_name(proposed_name);
+                        categories.push(ProposedCategory {
+                            name: category_name.clone(),
+                            purpose: proposed_name.clone(),
+                            target_content_types: content_groups
+                                .iter()
+                                .map(|g| g.extension.clone())
+                                .collect(),
+                            confidence: cr.confidence,
+                            is_existing: false,
+                            target_path: None,
+                        });
                     }
                 }
-            }
-            None => {
-                // Fallback: use content groups if no classification result
-                for group in content_groups {
-                    let purpose = Self::content_type_to_purpose(&group.category);
-                    let target_path = analysis
-                        .candidate_categories
-                        .iter()
-                        .find(|c| {
-                            c.name.to_lowercase().contains(&purpose)
-                                || c.name.to_lowercase().contains(&group.extension)
-                        })
-                        .map(|c| c.path.clone());
-
-                    let is_existing = target_path.is_some();
-
-                    categories.push(ProposedCategory {
-                        name: purpose.clone(),
-                        purpose,
-                        target_content_types: vec![group.extension.clone()],
-                        confidence: group.percentage_of_scope / 100.0,
-                        is_existing,
-                        target_path,
-                    });
+                ClassificationDecision::LeaveUnclassified | ClassificationDecision::AskUser => {
+                    // No categories proposed for LeaveUnclassified or AskUser
                 }
             }
         }
 
         categories
-    }
-
-    fn content_type_to_purpose(ct: &crate::agent::analysis::ContentType) -> String {
-        match ct {
-            crate::agent::analysis::ContentType::Documents => "document_storage".to_string(),
-            crate::agent::analysis::ContentType::Images => "image_storage".to_string(),
-            crate::agent::analysis::ContentType::Archives => "archive_storage".to_string(),
-            crate::agent::analysis::ContentType::Media => "media_storage".to_string(),
-            crate::agent::analysis::ContentType::Code => "code_storage".to_string(),
-            crate::agent::analysis::ContentType::Installers => "installer_storage".to_string(),
-            crate::agent::analysis::ContentType::Data => "data_storage".to_string(),
-            crate::agent::analysis::ContentType::Config => "config_storage".to_string(),
-            crate::agent::analysis::ContentType::Other => "misc_storage".to_string(),
-        }
     }
 
     fn normalize_category_name(name: &str) -> String {
@@ -369,142 +334,62 @@ impl RecommendationEngine {
         &self,
         intent: &TaskIntent,
         analysis: &TaskAnalysis,
-        proposed_categories: &[ProposedCategory],
+        _proposed_categories: &[ProposedCategory],
     ) -> Vec<ProposedOperation> {
         let mut operations = Vec::new();
 
         let classification = analysis.classification_results.first();
 
-        match classification {
-            Some(cr) => {
-                use crate::classification::ClassificationDecision;
-                match cr.decision {
-                    ClassificationDecision::MoveExisting => {
-                        if let Some(ref selected) = cr.selected_candidate {
-                            let candidate = analysis.candidate_categories.iter().find(|c| c.path == *selected);
-                            if let Some(cand) = candidate {
-                                // Use the content groups to determine what to move to the selected candidate
-                                let content_groups = &analysis.structure_summary.content_groups;
-                                for group in content_groups {
-                                    operations.push(ProposedOperation::MoveCategory {
-                                        strategy: self.strategy_name(intent),
-                                        content_type: group.extension.clone(),
-                                        file_count: group.file_count,
-                                        to_category: cand.name.clone(),
-                                    });
-                                }
-                                operations.push(ProposedOperation::PreserveDirectory {
-                                    path: selected.clone(),
-                                });
-                            }
-                        }
-                    }
-                    ClassificationDecision::CreateCategory => {
-                        if let Some(ref proposed_name) = cr.proposed_category_name {
-                            let category_name = Self::normalize_category_name(proposed_name);
+        if let Some(cr) = classification {
+            use crate::classification::ClassificationDecision;
+            match cr.decision {
+                ClassificationDecision::MoveExisting => {
+                    if let Some(ref selected) = cr.selected_candidate {
+                        let candidate = analysis
+                            .candidate_categories
+                            .iter()
+                            .find(|c| c.path == *selected);
+                        if let Some(cand) = candidate {
                             let content_groups = &analysis.structure_summary.content_groups;
-                            operations.push(ProposedOperation::CreateCategory {
-                                name: category_name.clone(),
-                                purpose: proposed_name.clone(),
-                            });
                             for group in content_groups {
                                 operations.push(ProposedOperation::MoveCategory {
                                     strategy: self.strategy_name(intent),
                                     content_type: group.extension.clone(),
                                     file_count: group.file_count,
-                                    to_category: category_name.clone(),
+                                    to_category: cand.name.clone(),
                                 });
                             }
-                        }
-                    }
-                    ClassificationDecision::LeaveUnclassified => {
-                        // No mutations for LeaveUnclassified
-                        // Only add LeaveUnclassified operation for "Other" content
-                        let leftover_count: u64 = analysis
-                            .content_groups
-                            .iter()
-                            .filter(|g| g.category == crate::agent::analysis::ContentType::Other)
-                            .map(|g| g.file_count)
-                            .sum();
-                        if leftover_count > 0 {
-                            operations.push(ProposedOperation::LeaveUnclassified {
-                                file_count: leftover_count,
-                                reason: "Classification decided LeaveUnclassified".to_string(),
+                            operations.push(ProposedOperation::PreserveDirectory {
+                                path: selected.clone(),
                             });
                         }
                     }
-                    ClassificationDecision::AskUser => {
-                        // No mutations for AskUser - remains unresolved
-                        // The unresolved question is handled in generate_questions
-                    }
                 }
-            }
-            None => {
-                // Fallback: use content groups if no classification result
-                let content_groups = &analysis.structure_summary.content_groups;
-                for group in content_groups {
-                    let category_name = Self::content_type_to_purpose(&group.category);
-                    let has_existing = proposed_categories
-                        .iter()
-                        .any(|c| c.name == category_name && c.is_existing);
-
-                    if !has_existing {
+                ClassificationDecision::CreateCategory => {
+                    if let Some(ref proposed_name) = cr.proposed_category_name {
+                        let category_name = Self::normalize_category_name(proposed_name);
+                        let content_groups = &analysis.structure_summary.content_groups;
                         operations.push(ProposedOperation::CreateCategory {
-                            name: category_name.to_string(),
-                            purpose: category_name.to_string(),
+                            name: category_name.clone(),
+                            purpose: proposed_name.clone(),
                         });
-                    }
-
-                    operations.push(ProposedOperation::MoveCategory {
-                        strategy: self.strategy_name(intent),
-                        content_type: group.extension.clone(),
-                        file_count: group.file_count,
-                        to_category: category_name.to_string(),
-                    });
-                }
-
-                for candidate in &analysis.candidate_categories {
-                    let is_preserved = proposed_categories.iter().any(|c| {
-                        c.target_path
-                            .as_ref()
-                            .map(|p| p == &candidate.path)
-                            .unwrap_or(false)
-                    });
-                    if is_preserved {
-                        operations.push(ProposedOperation::PreserveDirectory {
-                            path: candidate.path.clone(),
-                        });
+                        for group in content_groups {
+                            operations.push(ProposedOperation::MoveCategory {
+                                strategy: self.strategy_name(intent),
+                                content_type: group.extension.clone(),
+                                file_count: group.file_count,
+                                to_category: category_name.clone(),
+                            });
+                        }
                     }
                 }
+                ClassificationDecision::LeaveUnclassified => {
+                    // LeaveUnclassified: zero mutation
+                }
+                ClassificationDecision::AskUser => {
+                    // AskUser: zero mutation
+                }
             }
-        }
-
-        // Handle constraints that are independent of classification
-        if intent.constraints.auto_delete_temps {
-            let temps_count = analysis
-                .scope_evidence
-                .extension_histogram
-                .iter()
-                .filter(|(ext, _)| {
-                    ext.as_str() == "tmp" || ext.as_str() == "temp" || ext.as_str() == "crdownload"
-                })
-                .map(|(_, count)| *count)
-                .sum::<u64>();
-
-            if temps_count > 0 {
-                operations.push(ProposedOperation::ArchiveFiles {
-                    category: "temp_files".to_string(),
-                    file_count: temps_count,
-                });
-            }
-        }
-
-        if let Some(archive_duration) = &intent.constraints.archive_old {
-            let archive_secs = archive_duration.as_secs();
-            operations.push(ProposedOperation::ArchiveFiles {
-                category: format!("files_older_than_{}s", archive_secs),
-                file_count: 0,
-            });
         }
 
         operations

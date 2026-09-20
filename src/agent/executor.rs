@@ -266,6 +266,8 @@ pub struct ApplyResult {
     pub can_undo: bool,
     pub undo_supported_count: usize,
     pub undo_unsupported_count: usize,
+    #[serde(default)]
+    pub execution_verification: Option<crate::agent::verification::ExecutionVerificationResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +425,7 @@ impl Executor {
             can_undo,
             undo_supported_count,
             undo_unsupported_count,
+            execution_verification: None,
         })
     }
 
@@ -821,7 +824,8 @@ impl Executor {
 
         if recovery.has_conflicts {
             return Err(ApplyError::InvalidPlan(
-                "Plan has operations in conflict with current filesystem state. Cannot resume.".to_string(),
+                "Plan has operations in conflict with current filesystem state. Cannot resume."
+                    .to_string(),
             ));
         }
 
@@ -842,7 +846,9 @@ impl Executor {
                         FileSystemOperation::Move { .. } | FileSystemOperation::CreateDir { .. }
                     );
                     (
-                        ExecutionStatus::Skipped("Already applied - skipped during resume".to_string()),
+                        ExecutionStatus::Skipped(
+                            "Already applied - skipped during resume".to_string(),
+                        ),
                         Some(now_secs()),
                         Some("Operation already applied; skipped during resume".to_string()),
                         undo_supported,
@@ -851,49 +857,33 @@ impl Executor {
                 OperationExecutionState::Pending => {
                     let validated = validation.validated_operations.get(idx);
                     match validated {
-                        Some(v) if v.status.is_invalid() => {
-                            (
-                                ExecutionStatus::Failed(format!("Invalid: {}", v.status)),
-                                Some(now_secs()),
-                                Some("Cannot execute invalid operation".to_string()),
-                                false,
-                            )
-                        }
-                        Some(v) if v.status.is_conflict() => {
-                            (
-                                ExecutionStatus::Failed(format!("Conflict: {}", v.status)),
-                                Some(now_secs()),
-                                Some("Cannot execute conflicting operation".to_string()),
-                                false,
-                            )
-                        }
-                        Some(v) if v.status.is_blocked() && !force => {
-                            (
-                                ExecutionStatus::Skipped(
-                                    "Blocked by constraint".to_string(),
-                                ),
-                                Some(now_secs()),
-                                Some(
-                                    "Skipped due to constraint (use --force to override)".to_string(),
-                                ),
-                                false,
-                            )
-                        }
+                        Some(v) if v.status.is_invalid() => (
+                            ExecutionStatus::Failed(format!("Invalid: {}", v.status)),
+                            Some(now_secs()),
+                            Some("Cannot execute invalid operation".to_string()),
+                            false,
+                        ),
+                        Some(v) if v.status.is_conflict() => (
+                            ExecutionStatus::Failed(format!("Conflict: {}", v.status)),
+                            Some(now_secs()),
+                            Some("Cannot execute conflicting operation".to_string()),
+                            false,
+                        ),
+                        Some(v) if v.status.is_blocked() && !force => (
+                            ExecutionStatus::Skipped("Blocked by constraint".to_string()),
+                            Some(now_secs()),
+                            Some("Skipped due to constraint (use --force to override)".to_string()),
+                            false,
+                        ),
                         _ => self.execute_operation(op, idx),
                     }
                 }
-                OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => {
-                    (
-                        ExecutionStatus::Failed(
-                            "Conflict/Failed state".to_string(),
-                        ),
-                        Some(now_secs()),
-                        Some(
-                            "Cannot execute operation in conflict/failed state".to_string(),
-                        ),
-                        false,
-                    )
-                }
+                OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => (
+                    ExecutionStatus::Failed("Conflict/Failed state".to_string()),
+                    Some(now_secs()),
+                    Some("Cannot execute operation in conflict/failed state".to_string()),
+                    false,
+                ),
             };
 
             if can_undo {
@@ -930,6 +920,7 @@ impl Executor {
             can_undo,
             undo_supported_count,
             undo_unsupported_count,
+            execution_verification: None,
         })
     }
 
@@ -990,7 +981,8 @@ impl Executor {
 
         if recovery.has_conflicts {
             return Err(ApplyError::InvalidPlan(
-                "Plan has operations in conflict with current filesystem state. Cannot resume.".to_string(),
+                "Plan has operations in conflict with current filesystem state. Cannot resume."
+                    .to_string(),
             ));
         }
 
@@ -1011,9 +1003,13 @@ impl Executor {
                         FileSystemOperation::Move { .. } | FileSystemOperation::CreateDir { .. }
                     );
                     (
-                        ExecutionStatus::Skipped("Already applied - skipped during guarded resume".to_string()),
+                        ExecutionStatus::Skipped(
+                            "Already applied - skipped during guarded resume".to_string(),
+                        ),
                         Some(now_secs()),
-                        Some("Operation already applied; skipped during guarded resume".to_string()),
+                        Some(
+                            "Operation already applied; skipped during guarded resume".to_string(),
+                        ),
                         undo_supported,
                     )
                 }
@@ -1033,58 +1029,51 @@ impl Executor {
                         )
                     } else if !precondition.check_unchanged(op) {
                         (
-                            ExecutionStatus::Conflict("TOCTOU: Precondition violated — filesystem state changed".to_string()),
+                            ExecutionStatus::Conflict(
+                                "TOCTOU: Precondition violated — filesystem state changed"
+                                    .to_string(),
+                            ),
                             Some(now_secs()),
-                            Some("TOCTOU: Precondition check failed during guarded execution".to_string()),
+                            Some(
+                                "TOCTOU: Precondition check failed during guarded execution"
+                                    .to_string(),
+                            ),
                             false,
                         )
                     } else {
                         let validated = validation.validated_operations.get(idx);
                         match validated {
-                            Some(v) if v.status.is_invalid() => {
-                                (
-                                    ExecutionStatus::Failed(format!("Invalid: {}", v.status)),
-                                    Some(now_secs()),
-                                    Some("Cannot execute invalid operation".to_string()),
-                                    false,
-                                )
-                            }
-                            Some(v) if v.status.is_conflict() => {
-                                (
-                                    ExecutionStatus::Failed(format!("Conflict: {}", v.status)),
-                                    Some(now_secs()),
-                                    Some("Cannot execute conflicting operation".to_string()),
-                                    false,
-                                )
-                            }
-                            Some(v) if v.status.is_blocked() && !force => {
-                                (
-                                    ExecutionStatus::Skipped(
-                                        "Blocked by constraint".to_string(),
-                                    ),
-                                    Some(now_secs()),
-                                    Some(
-                                        "Skipped due to constraint (use --force to override)".to_string(),
-                                    ),
-                                    false,
-                                )
-                            }
+                            Some(v) if v.status.is_invalid() => (
+                                ExecutionStatus::Failed(format!("Invalid: {}", v.status)),
+                                Some(now_secs()),
+                                Some("Cannot execute invalid operation".to_string()),
+                                false,
+                            ),
+                            Some(v) if v.status.is_conflict() => (
+                                ExecutionStatus::Failed(format!("Conflict: {}", v.status)),
+                                Some(now_secs()),
+                                Some("Cannot execute conflicting operation".to_string()),
+                                false,
+                            ),
+                            Some(v) if v.status.is_blocked() && !force => (
+                                ExecutionStatus::Skipped("Blocked by constraint".to_string()),
+                                Some(now_secs()),
+                                Some(
+                                    "Skipped due to constraint (use --force to override)"
+                                        .to_string(),
+                                ),
+                                false,
+                            ),
                             _ => self.execute_operation(op, idx),
                         }
                     }
                 }
-                OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => {
-                    (
-                        ExecutionStatus::Failed(
-                            "Conflict/Failed state".to_string(),
-                        ),
-                        Some(now_secs()),
-                        Some(
-                            "Cannot execute operation in conflict/failed state".to_string(),
-                        ),
-                        false,
-                    )
-                }
+                OperationExecutionState::Conflict(_) | OperationExecutionState::Failed => (
+                    ExecutionStatus::Failed("Conflict/Failed state".to_string()),
+                    Some(now_secs()),
+                    Some("Cannot execute operation in conflict/failed state".to_string()),
+                    false,
+                ),
             };
 
             if can_undo {
@@ -1121,6 +1110,7 @@ impl Executor {
             can_undo,
             undo_supported_count,
             undo_unsupported_count,
+            execution_verification: None,
         })
     }
 }

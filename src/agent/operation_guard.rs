@@ -53,7 +53,9 @@ pub struct Precondition {
 impl Precondition {
     pub fn capture(op: &FileSystemOperation) -> Self {
         let (source_path, dest_path) = match op {
-            FileSystemOperation::Move { source, dest } => (Some(source.as_path()), Some(dest.as_path())),
+            FileSystemOperation::Move { source, dest } => {
+                (Some(source.as_path()), Some(dest.as_path()))
+            }
             FileSystemOperation::CreateDir { path } => (None, Some(path.as_path())),
             FileSystemOperation::Delete { path, .. } => (Some(path.as_path()), None),
         };
@@ -73,7 +75,9 @@ impl Precondition {
 
     pub fn check_unchanged(&self, op: &FileSystemOperation) -> bool {
         let (source_path, dest_path) = match op {
-            FileSystemOperation::Move { source, dest } => (Some(source.as_path()), Some(dest.as_path())),
+            FileSystemOperation::Move { source, dest } => {
+                (Some(source.as_path()), Some(dest.as_path()))
+            }
             FileSystemOperation::CreateDir { path } => (None, Some(path.as_path())),
             FileSystemOperation::Delete { path, .. } => (Some(path.as_path()), None),
         };
@@ -85,7 +89,8 @@ impl Precondition {
                 if !current_exists {
                     return false;
                 }
-                if current_meta.is_none() || current_meta.as_ref() != self.source_metadata.as_ref() {
+                if current_meta.is_none() || current_meta.as_ref() != self.source_metadata.as_ref()
+                {
                     return false;
                 }
             } else {
@@ -141,7 +146,8 @@ impl ScopeLock {
         let lock_path = scope.join(format!(".{}.lock", plan_id));
 
         if !scope.exists() {
-            fs::create_dir_all(scope).map_err(|e| format!("Failed to create scope for lock: {}", e))?;
+            fs::create_dir_all(scope)
+                .map_err(|e| format!("Failed to create scope for lock: {}", e))?;
         }
 
         // Open/create lock file WITHOUT truncate. Truncating before lock
@@ -250,7 +256,10 @@ impl OperationGuard {
         match &self.op {
             FileSystemOperation::Move { source, dest } => {
                 if !source.exists() {
-                    return ExecutionResult::Failed(format!("Source not found: {}", source.display()));
+                    return ExecutionResult::Failed(format!(
+                        "Source not found: {}",
+                        source.display()
+                    ));
                 }
                 if source == dest {
                     return ExecutionResult::Failed("Source equals destination".to_string());

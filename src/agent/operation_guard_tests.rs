@@ -1,7 +1,9 @@
 use super::*;
-use crate::agent::executor::{ApplyError, Executor, ExecutionStatus};
+use crate::agent::executor::{ApplyError, ExecutionStatus, Executor};
 use crate::agent::plan::FileSystemOperation;
-use crate::agent::validate::{ValidationResult, ValidationStatus, ValidationSummary, ValidatedOperation};
+use crate::agent::validate::{
+    ValidatedOperation, ValidationResult, ValidationStatus, ValidationSummary,
+};
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -19,7 +21,8 @@ fn test_file_metadata_capture_and_compare() {
     assert_eq!(meta1, meta2, "Metadata should match when file is unchanged");
 
     fs::write(&path, "modified content").unwrap();
-    let meta3 = FileMetadata::capture(&path).expect("metadata should be captured after modification");
+    let meta3 =
+        FileMetadata::capture(&path).expect("metadata should be captured after modification");
     assert_ne!(meta1, meta3, "Metadata should differ after modification");
     assert_ne!(meta1.size, meta3.size, "Size should differ");
 }
@@ -27,7 +30,10 @@ fn test_file_metadata_capture_and_compare() {
 #[test]
 fn test_file_metadata_capture_nonexistent() {
     let meta = FileMetadata::capture(Path::new("/nonexistent/path/file.txt"));
-    assert!(meta.is_none(), "Metadata should be None for nonexistent file");
+    assert!(
+        meta.is_none(),
+        "Metadata should be None for nonexistent file"
+    );
 }
 
 #[test]
@@ -45,8 +51,14 @@ fn test_precondition_capture_move() {
     let precondition = Precondition::capture(&op);
     assert!(precondition.source_existed, "Source should exist");
     assert!(!precondition.dest_existed, "Dest should not exist");
-    assert!(precondition.source_metadata.is_some(), "Source metadata should be captured");
-    assert!(precondition.dest_metadata.is_none(), "Dest metadata should be None");
+    assert!(
+        precondition.source_metadata.is_some(),
+        "Source metadata should be captured"
+    );
+    assert!(
+        precondition.dest_metadata.is_none(),
+        "Dest metadata should be None"
+    );
 }
 
 #[test]
@@ -54,11 +66,16 @@ fn test_precondition_capture_create_dir() {
     let dir = tempdir().unwrap();
     let new_dir = dir.path().join("new_dir");
 
-    let op = FileSystemOperation::CreateDir { path: new_dir.clone() };
+    let op = FileSystemOperation::CreateDir {
+        path: new_dir.clone(),
+    };
 
     let precondition = Precondition::capture(&op);
     assert!(!precondition.dest_existed, "Path should not exist");
-    assert!(precondition.dest_metadata.is_none(), "Dest metadata should be None");
+    assert!(
+        precondition.dest_metadata.is_none(),
+        "Dest metadata should be None"
+    );
 }
 
 #[test]
@@ -74,7 +91,10 @@ fn test_precondition_capture_delete() {
 
     let precondition = Precondition::capture(&op);
     assert!(precondition.source_existed, "File should exist");
-    assert!(precondition.source_metadata.is_some(), "Source metadata should be captured");
+    assert!(
+        precondition.source_metadata.is_some(),
+        "Source metadata should be captured"
+    );
 }
 
 #[test]
@@ -192,11 +212,17 @@ fn test_scope_lock_writes_plan_id() {
     // Acquire and drop the lock to verify the lock file is created and cleaned up
     let lock = ScopeLock::acquire(dir.path(), plan_id).expect("Should acquire lock");
     let lock_path = dir.path().join(format!(".{}.lock", plan_id));
-    assert!(lock_path.exists(), "Lock file should exist while lock is held");
+    assert!(
+        lock_path.exists(),
+        "Lock file should exist while lock is held"
+    );
     drop(lock);
 
     // After drop, the lock file should be removed
-    assert!(!lock_path.exists(), "Lock file should be removed after drop");
+    assert!(
+        !lock_path.exists(),
+        "Lock file should be removed after drop"
+    );
 }
 
 #[test]
@@ -249,7 +275,10 @@ fn test_operation_guard_conflict_on_condition_change() {
     assert!(result.is_conflict(), "Should detect precondition violation");
     match &result {
         ExecutionResult::Conflict(msg) => {
-            assert!(msg.contains("TOCTOU"), "Conflict message should mention TOCTOU");
+            assert!(
+                msg.contains("TOCTOU"),
+                "Conflict message should mention TOCTOU"
+            );
         }
         _ => panic!("Expected Conflict result"),
     }
@@ -263,7 +292,9 @@ fn test_operation_guard_create_dir() {
     let dir = tempdir().unwrap();
     let new_dir = dir.path().join("guarded_new_dir");
 
-    let op = FileSystemOperation::CreateDir { path: new_dir.clone() };
+    let op = FileSystemOperation::CreateDir {
+        path: new_dir.clone(),
+    };
 
     let lock = ScopeLock::acquire(dir.path(), "guard-mkdir").expect("Should acquire lock");
     let guard = OperationGuard::new(op, lock);
@@ -349,7 +380,10 @@ fn test_execute_guarded_success() {
     let validation = make_validation(&plan.id, &source, &dest);
 
     let executor = Executor::default();
-    let result = executor.execute_guarded(&plan.operations[0], Some(&validation.validated_operations[0]));
+    let result = executor.execute_guarded(
+        &plan.operations[0],
+        Some(&validation.validated_operations[0]),
+    );
 
     match result {
         (ExecutionStatus::Success, _, _, can_undo) => {
@@ -427,7 +461,9 @@ fn test_resume_execution_guarded_skips_already_applied() {
 
     // Execute the plan first
     let validation = make_validation(&plan.id, &source, &dest);
-    let apply_result = executor.execute_with_options(&plan, &validation, false).unwrap();
+    let apply_result = executor
+        .execute_with_options(&plan, &validation, false)
+        .unwrap();
     assert!(apply_result.is_complete);
 
     // Now resume: should skip AlreadyApplied
@@ -625,7 +661,8 @@ fn test_scope_lock_creates_scope_if_missing() {
     // Scope doesn't exist yet
     assert!(!scope.exists());
 
-    let lock = ScopeLock::acquire(&scope, "test-plan").expect("Should create scope and acquire lock");
+    let lock =
+        ScopeLock::acquire(&scope, "test-plan").expect("Should create scope and acquire lock");
     assert!(scope.exists(), "Scope directory should be created");
 
     let lock_file = scope.join(".test-plan.lock");
@@ -650,8 +687,14 @@ fn test_resume_execution_guarded_partial_execution() {
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
         operations: vec![
-            FileSystemOperation::Move { source: source1.clone(), dest: dest1.clone() },
-            FileSystemOperation::Move { source: source2.clone(), dest: dest2.clone() },
+            FileSystemOperation::Move {
+                source: source1.clone(),
+                dest: dest1.clone(),
+            },
+            FileSystemOperation::Move {
+                source: source2.clone(),
+                dest: dest2.clone(),
+            },
         ],
         estimated_impact: crate::agent::EstimatedImpact {
             files_moved: 2,
@@ -672,13 +715,19 @@ fn test_resume_execution_guarded_partial_execution() {
         scope: dir.path().to_path_buf(),
         validated_operations: vec![
             ValidatedOperation {
-                operation: FileSystemOperation::Move { source: source1.clone(), dest: dest1.clone() },
+                operation: FileSystemOperation::Move {
+                    source: source1.clone(),
+                    dest: dest1.clone(),
+                },
                 status: ValidationStatus::Valid,
                 warnings: vec![],
                 dependencies: vec![],
             },
             ValidatedOperation {
-                operation: FileSystemOperation::Move { source: source2.clone(), dest: dest2.clone() },
+                operation: FileSystemOperation::Move {
+                    source: source2.clone(),
+                    dest: dest2.clone(),
+                },
                 status: ValidationStatus::Valid,
                 warnings: vec![],
                 dependencies: vec![],

@@ -11,12 +11,34 @@ pub struct OpenAiCompatibleProvider {
 
 impl OpenAiCompatibleProvider {
     pub fn new(base_url: String, api_key: String, model: String, timeout: Duration) -> Self {
+        let normalized = normalize_endpoint(&base_url);
         Self {
-            base_url,
+            base_url: normalized,
             api_key,
             model,
             timeout,
         }
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+}
+
+fn normalize_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{}/chat/completions", trimmed)
     }
 }
 
@@ -87,6 +109,11 @@ impl LlmProvider for OpenAiCompatibleProvider {
             .map_err(|e| {
                 if e.is_timeout() {
                     LlmError::Timeout(self.timeout)
+                } else if e.is_connect() {
+                    LlmError::ProviderError(format!(
+                        "Failed to connect to provider at '{}': {}",
+                        self.base_url, e
+                    ))
                 } else {
                     LlmError::ProviderError(format!("Request error: {}", e))
                 }
@@ -100,7 +127,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         if !status.is_success() {
             let error: Option<OpenAiErrorResponse> = serde_json::from_str(&body).ok();
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                return Err(LlmError::MissingApiKey(self.api_key.clone()));
+                return Err(LlmError::MissingApiKey("***".to_string()));
             }
             if status.as_u16() == 429 {
                 return Err(LlmError::HttpError(429, "Rate limited".to_string()));
@@ -123,6 +150,12 @@ impl LlmProvider for OpenAiCompatibleProvider {
             .content
             .clone();
 
+        if content.is_empty() {
+            return Err(LlmError::InvalidResponse(
+                "Provider returned empty response content".to_string(),
+            ));
+        }
+
         Ok(content)
     }
 
@@ -136,12 +169,92 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_openai_provider_creation() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://example.com/v1".to_string(),
+            "sk-test-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(provider.name(), "openai-compatible");
+        assert_eq!(provider.model(), "gpt-4");
+        assert_eq!(provider.timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_endpoint_without_trailing_slash() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://example.com/v1".to_string(),
+            "key".to_string(),
+            "model".to_string(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            provider.base_url(),
+            "https://example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_with_trailing_slash() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://example.com/v1/".to_string(),
+            "key".to_string(),
+            "model".to_string(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            provider.base_url(),
+            "https://example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_already_has_chat_completions() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://example.com/v1/chat/completions".to_string(),
+            "key".to_string(),
+            "model".to_string(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            provider.base_url(),
+            "https://example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_with_trailing_slash_and_chat_completions() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://example.com/v1/chat/completions/".to_string(),
+            "key".to_string(),
+            "model".to_string(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            provider.base_url(),
+            "https://example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_without_v1_prefix() {
+        let provider = OpenAiCompatibleProvider::new(
+            "https://example.com".to_string(),
+            "key".to_string(),
+            "model".to_string(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(provider.base_url(), "https://example.com/chat/completions");
+    }
+
+    #[test]
     fn test_request_does_not_include_response_format() {
         let request = OpenAiChatRequest {
             model: "gemma4:12b".to_string(),
             messages: vec![OpenAiChatMessage {
                 role: "user".to_string(),
-                content: "請只回答 OK".to_string(),
+                content: "test".to_string(),
             }],
         };
 
@@ -150,34 +263,29 @@ mod tests {
 
         assert!(
             !parsed.as_object().unwrap().contains_key("response_format"),
-            "request must NOT include response_format (causes Ollama/Gemma timeout)"
+            "request must NOT include response_format"
         );
     }
 
     #[test]
-    fn test_parse_ollama_openai_compatible_response() {
-        let ollama_response_body = r#"{
-            "id": "chatcmpl-267",
+    fn test_parse_openai_compatible_success_response() {
+        let response_json = r#"{
+            "id": "chatcmpl-123",
             "object": "chat.completion",
-            "created": 1789708439,
-            "model": "gemma4:12b",
+            "created": 1700000000,
+            "model": "gpt-4",
             "choices": [{
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": "OK"
+                    "content": "Hello from OpenAI-compatible!"
                 },
                 "finish_reason": "stop"
-            }],
-            "usage": {
-                "prompt_tokens": 20,
-                "completion_tokens": 1,
-                "total_tokens": 21
-            }
+            }]
         }"#;
 
         let chat_response: OpenAiChatResponse =
-            serde_json::from_str(ollama_response_body).expect("should parse Ollama response");
+            serde_json::from_str(response_json).expect("should parse success response");
 
         let content = chat_response
             .choices
@@ -187,6 +295,226 @@ mod tests {
             .content
             .clone();
 
-        assert_eq!(content, "OK");
+        assert_eq!(content, "Hello from OpenAI-compatible!");
+    }
+
+    #[test]
+    fn test_parse_openai_error_response() {
+        let error_json =
+            r#"{"error": {"message": "Invalid API key", "type": "invalid_request_error"}}"#;
+
+        let error: OpenAiErrorResponse =
+            serde_json::from_str(error_json).expect("should parse error response");
+
+        assert_eq!(error.error.unwrap().message, "Invalid API key");
+    }
+
+    #[test]
+    fn test_normalize_endpoint_appends_chat_completions() {
+        assert_eq!(
+            normalize_endpoint("https://example.com/v1"),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_endpoint("https://example.com/v1/"),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_endpoint("https://example.com/v1/chat/completions"),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_endpoint("https://example.com"),
+            "https://example.com/chat/completions"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_openai_successful_chat_response() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "chatcmpl-123",
+                    "object": "chat.completion",
+                    "created": 1700000000,
+                    "model": "gpt-4",
+                    "choices": [{
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "Hello from OpenAI!"
+                        },
+                        "finish_reason": "stop"
+                    }]
+                }"#,
+            )
+            .create();
+
+        let provider = OpenAiCompatibleProvider::new(
+            server.url() + "/v1",
+            "sk-test-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_secs(10),
+        );
+
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = provider.chat(&messages);
+
+        assert!(result.is_ok(), "should succeed: {:?}", result.err());
+        assert_eq!(result.unwrap(), "Hello from OpenAI!");
+
+        mock.assert();
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_openai_http_error() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(401)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error": {"message": "Unauthorized"}}"#)
+            .create();
+
+        let provider = OpenAiCompatibleProvider::new(
+            server.url() + "/v1",
+            "bad-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_secs(10),
+        );
+
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = provider.chat(&messages);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LlmError::MissingApiKey(_) => {}
+            other => panic!("expected MissingApiKey, got: {:?}", other),
+        }
+
+        mock.assert();
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_openai_malformed_response() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"not valid json at all"#)
+            .create();
+
+        let provider = OpenAiCompatibleProvider::new(
+            server.url() + "/v1",
+            "sk-test-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_secs(10),
+        );
+
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = provider.chat(&messages);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LlmError::InvalidResponse(msg) => {
+                assert!(msg.contains("Response parse error"));
+            }
+            other => panic!("expected InvalidResponse, got: {:?}", other),
+        }
+
+        mock.assert();
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_openai_connection_failure() {
+        let provider = OpenAiCompatibleProvider::new(
+            "http://127.0.0.1:1/v1/chat/completions".to_string(),
+            "sk-test-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_secs(5),
+        );
+
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = provider.chat(&messages);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LlmError::ProviderError(msg) => {
+                assert!(msg.contains("Failed to connect"));
+            }
+            other => panic!("expected ProviderError, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_openai_empty_response_content() {
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "chatcmpl-123",
+                    "object": "chat.completion",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": ""}
+                    }]
+                }"#,
+            )
+            .create();
+
+        let provider = OpenAiCompatibleProvider::new(
+            server.url() + "/v1",
+            "sk-test-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_secs(10),
+        );
+
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = provider.chat(&messages);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            LlmError::InvalidResponse(msg) => {
+                assert!(msg.contains("empty response content"));
+            }
+            other => panic!("expected InvalidResponse, got: {:?}", other),
+        }
+
+        mock.assert();
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_openai_timeout_error_propagation() {
+        let provider = OpenAiCompatibleProvider::new(
+            "http://192.0.2.1:1/v1".to_string(),
+            "sk-test-key".to_string(),
+            "gpt-4".to_string(),
+            Duration::from_millis(1),
+        );
+
+        let messages = vec![ChatMessage::user("Hello")];
+        let result = provider.chat(&messages);
+
+        match result {
+            Err(LlmError::Timeout(d)) => {
+                assert_eq!(d, Duration::from_millis(1));
+            }
+            Err(LlmError::ProviderError(_)) => {}
+            Err(e) => panic!("expected Timeout or ProviderError, got: {:?}", e),
+            Ok(_) => panic!("expected error for unreachable endpoint"),
+        }
     }
 }

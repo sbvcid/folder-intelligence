@@ -11,6 +11,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "network")]
+use crate::llm::ollama::OllamaProvider;
+#[cfg(feature = "network")]
 use crate::llm::openai::OpenAiCompatibleProvider;
 
 pub struct ChatCommand {
@@ -118,15 +120,31 @@ impl ChatCommand {
     }
 }
 
-fn create_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
+pub fn create_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
     match config.provider.as_str() {
-        "openai" => {
+        "openai" | "openai-compatible" => {
             #[cfg(feature = "network")]
             {
                 let api_key = config.resolve_api_key()?;
                 Ok(Arc::new(OpenAiCompatibleProvider::new(
-                    config.base_url.clone(),
+                    config.resolved_base_url(),
                     api_key,
+                    config.model.clone(),
+                    config.timeout(),
+                )))
+            }
+            #[cfg(not(feature = "network"))]
+            {
+                Err(LlmError::ProviderError(
+                    "Network feature not enabled. Install with --features network".to_string(),
+                ))
+            }
+        }
+        "ollama" => {
+            #[cfg(feature = "network")]
+            {
+                Ok(Arc::new(OllamaProvider::new(
+                    config.resolved_base_url(),
                     config.model.clone(),
                     config.timeout(),
                 )))
@@ -140,9 +158,134 @@ fn create_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvider>, LlmError>
         }
         "mock" => Ok(Arc::new(MockLlmProvider::with_default_organize())),
         other => Err(LlmError::ProviderError(format!(
-            "Unknown provider '{}'. Supported: 'mock', 'openai'",
+            "Unknown provider '{}'. Supported: 'mock', 'openai-compatible', 'ollama'",
             other
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::provider::ChatMessage;
+
+    #[test]
+    #[cfg(not(feature = "network"))]
+    fn test_create_provider_ollama_without_network() {
+        let config = LlmConfig {
+            provider: "ollama".to_string(),
+            model: "llama2".to_string(),
+            base_url: None,
+            api_key_env: "FOLDER_INTELLIGENCE_API_KEY".to_string(),
+            timeout_seconds: 60,
+        };
+        let result = create_provider(&config);
+        match result {
+            Err(LlmError::ProviderError(msg)) => {
+                assert!(msg.contains("Network feature not enabled"));
+            }
+            Err(e) => panic!("expected ProviderError, got: {:?}", e),
+            Ok(_) => panic!("expected error without network feature"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_create_provider_ollama_with_network() {
+        let config = LlmConfig {
+            provider: "ollama".to_string(),
+            model: "llama2".to_string(),
+            base_url: None,
+            api_key_env: "FOLDER_INTELLIGENCE_API_KEY".to_string(),
+            timeout_seconds: 60,
+        };
+        let result = create_provider(&config);
+        assert!(
+            result.is_ok(),
+            "should create OllamaProvider: {:?}",
+            result.err()
+        );
+        let provider = result.unwrap();
+        assert_eq!(provider.name(), "ollama");
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_create_provider_openai_compatible_with_network() {
+        std::env::set_var("FOLDER_INTELLIGENCE_API_KEY", "sk-test-key");
+        let config = LlmConfig {
+            provider: "openai-compatible".to_string(),
+            model: "gpt-4".to_string(),
+            base_url: Some("https://example.com/v1".to_string()),
+            api_key_env: "FOLDER_INTELLIGENCE_API_KEY".to_string(),
+            timeout_seconds: 60,
+        };
+        let result = create_provider(&config);
+        assert!(
+            result.is_ok(),
+            "should create OpenAiCompatibleProvider: {:?}",
+            result.err()
+        );
+        let provider = result.unwrap();
+        assert_eq!(provider.name(), "openai-compatible");
+    }
+
+    #[test]
+    #[cfg(not(feature = "network"))]
+    fn test_create_provider_openai_compatible_without_network() {
+        let config = LlmConfig {
+            provider: "openai-compatible".to_string(),
+            model: "gpt-4".to_string(),
+            base_url: None,
+            api_key_env: "FOLDER_INTELLIGENCE_API_KEY".to_string(),
+            timeout_seconds: 60,
+        };
+        let result = create_provider(&config);
+        match result {
+            Err(LlmError::ProviderError(msg)) => {
+                assert!(msg.contains("Network feature not enabled"));
+            }
+            Err(e) => panic!("expected ProviderError, got: {:?}", e),
+            Ok(_) => panic!("expected error without network feature"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "network")]
+    fn test_create_provider_mock_always_available() {
+        let config = LlmConfig::default();
+        let result = create_provider(&config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "mock");
+    }
+
+    #[test]
+    fn test_create_provider_unknown() {
+        let config = LlmConfig {
+            provider: "unknown".to_string(),
+            model: "test".to_string(),
+            base_url: None,
+            api_key_env: "FOLDER_INTELLIGENCE_API_KEY".to_string(),
+            timeout_seconds: 60,
+        };
+        let result = create_provider(&config);
+        match result {
+            Err(LlmError::ProviderError(msg)) => {
+                assert!(msg.contains("Unknown provider"));
+                assert!(msg.contains("openai-compatible"));
+            }
+            Err(e) => panic!("expected ProviderError, got: {:?}", e),
+            Ok(_) => panic!("expected error for unknown provider"),
+        }
+    }
+
+    #[test]
+    fn test_mock_provider_implement_trait() {
+        let provider = MockLlmProvider::with_default_organize();
+        let messages = vec![ChatMessage::user("organize my downloads")];
+        let result = provider.chat(&messages);
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("organize"));
     }
 }
 

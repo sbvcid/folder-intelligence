@@ -1,7 +1,7 @@
 use crate::agent::intent::{Goal, TaskIntent};
 use crate::classification::{
-    ClassificationDecision, ClassificationInput, ClassificationProcessor, ClassificationResult,
-    RuleBasedProcessor,
+    build_classification_request, ClassificationDecision, ClassificationInput,
+    ClassificationProcessor, ClassificationResult, LlmClassifier, RuleBasedProcessor,
 };
 use crate::evidence::{DirectoryEvidence, ScanLimits, ScanResult};
 use crate::scanner::Scanner;
@@ -127,7 +127,10 @@ pub struct TaskAnalysis {
     pub analysis_duration_ms: u64,
 }
 
-pub struct EvidenceAnalyzer;
+#[derive(Default)]
+pub struct EvidenceAnalyzer {
+    llm_classifier: Option<LlmClassifier>,
+}
 
 const DOCUMENT_EXTS: &[&str] = &[
     "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "rtf", "odt", "odp",
@@ -149,6 +152,11 @@ const DATA_EXTS: &[&str] = &["db", "sqlite", "sqlite3", "dat", "bin"];
 const CONFIG_EXTS: &[&str] = &["conf", "cfg", "ini", "env", "properties"];
 
 impl EvidenceAnalyzer {
+    pub fn with_llm_classifier(mut self, classifier: LlmClassifier) -> Self {
+        self.llm_classifier = Some(classifier);
+        self
+    }
+
     #[allow(dead_code)]
     pub fn analyze(&self, intent: &TaskIntent) -> Result<TaskAnalysis, AnalyzerError> {
         let start = std::time::Instant::now();
@@ -171,7 +179,8 @@ impl EvidenceAnalyzer {
             .evidence
             .into_iter()
             .find(|e| {
-                let canonical_e_path = std::fs::canonicalize(&e.path).unwrap_or_else(|_| e.path.clone());
+                let canonical_e_path =
+                    std::fs::canonicalize(&e.path).unwrap_or_else(|_| e.path.clone());
                 canonical_e_path == canonical_scope || e.path == scope
             })
             .ok_or_else(|| AnalyzerError::ScopeNotScannable(scope.clone()))?;
@@ -366,6 +375,19 @@ impl EvidenceAnalyzer {
             return Ok(Vec::new());
         }
 
+        if let Some(ref classifier) = self.llm_classifier {
+            return self.run_llm_classification(scope_evidence, candidates, classifier);
+        }
+
+        self.run_rule_based_classification(scope_evidence, candidates, scan_metadata)
+    }
+
+    fn run_rule_based_classification(
+        &self,
+        scope_evidence: &DirectoryEvidence,
+        candidates: &[CandidateCategory],
+        scan_metadata: crate::evidence::ScanMetadata,
+    ) -> Result<Vec<ClassificationResult>, AnalyzerError> {
         let candidate_paths: Vec<PathBuf> = candidates.iter().map(|c| c.path.clone()).collect();
 
         let mut candidates_with_prefix: Vec<crate::classification::CandidateEvidence> = Vec::new();
@@ -398,6 +420,27 @@ impl EvidenceAnalyzer {
 
         let processor = RuleBasedProcessor;
         let result = processor.classify(&input)?;
+
+        Ok(vec![result])
+    }
+
+    fn run_llm_classification(
+        &self,
+        scope_evidence: &DirectoryEvidence,
+        candidates: &[CandidateCategory],
+        classifier: &LlmClassifier,
+    ) -> Result<Vec<ClassificationResult>, AnalyzerError> {
+        let allowed_categories: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
+        let allowed_category_paths: Vec<(String, PathBuf)> = candidates
+            .iter()
+            .map(|c| (c.name.clone(), c.path.clone()))
+            .collect();
+
+        let request = build_classification_request(scope_evidence, &allowed_categories);
+
+        let result = classifier
+            .classify(&request, &scope_evidence.path, &allowed_category_paths)
+            .map_err(|e| AnalyzerError::ClassificationFailed(e.to_string()))?;
 
         Ok(vec![result])
     }
@@ -577,12 +620,6 @@ impl EvidenceAnalyzer {
         }
 
         gaps
-    }
-}
-
-impl Default for EvidenceAnalyzer {
-    fn default() -> Self {
-        Self
     }
 }
 

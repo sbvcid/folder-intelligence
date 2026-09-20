@@ -1,6 +1,4 @@
-use folder_intelligence::{
-    FileSystemOperation, OperationPlan, Pipeline, Policy, PolicyDecision,
-};
+use folder_intelligence::{FileSystemOperation, OperationPlan, Pipeline, Policy, PolicyDecision};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,7 +131,8 @@ pub fn evaluate_coverage(
                         items.push((
                             format!("MoveCategory({})", content_type),
                             CoverageStatus::Omitted,
-                            "Recommended category move has no corresponding plan operation".to_string(),
+                            "Recommended category move has no corresponding plan operation"
+                                .to_string(),
                         ));
                     }
                 }
@@ -144,9 +143,7 @@ pub fn evaluate_coverage(
                 let has_create = expected_dir.is_some_and(|dir_name| {
                     plan.operations.iter().any(|op| {
                         if let FileSystemOperation::CreateDir { path } = op {
-                            path.file_name()
-                                .and_then(|n| n.to_str())
-                                == Some(dir_name)
+                            path.file_name().and_then(|n| n.to_str()) == Some(dir_name)
                         } else {
                             false
                         }
@@ -203,16 +200,16 @@ pub fn evaluate_coverage(
                     ));
                 }
             }
-            folder_intelligence::ProposedOperation::LeaveUnclassified {
-                file_count,
-                reason,
-            } => {
+            folder_intelligence::ProposedOperation::LeaveUnclassified { file_count, reason } => {
                 if *file_count > 0 {
                     intentional_no_op += 1;
                     items.push((
                         format!("LeaveUnclassified({})", reason),
                         CoverageStatus::IntentionalNoOp,
-                        format!("Intentional unclassified: {} files left in place", file_count),
+                        format!(
+                            "Intentional unclassified: {} files left in place",
+                            file_count
+                        ),
                     ));
                 }
             }
@@ -294,17 +291,16 @@ pub fn verify_execution(
                 let dest_is_file = dest.is_file();
                 if !dest_exists_now || !dest_is_file {
                     failed = true;
-                    let msg = format!(
-                        "Destination missing or not a file: {}",
-                        dest.display()
-                    );
+                    let msg = format!("Destination missing or not a file: {}", dest.display());
                     failure_msgs.push(msg.clone());
                     checks.push((
                         format!("Move destination valid: {}", dest.display()),
                         false,
                         msg,
                     ));
-                } else if let Some(StateEntry::File(before_content)) = before_map.get(source.as_path()) {
+                } else if let Some(StateEntry::File(before_content)) =
+                    before_map.get(source.as_path())
+                {
                     if let Ok(after_content) = std::fs::read(dest) {
                         if &after_content != before_content {
                             failed = true;
@@ -353,11 +349,7 @@ pub fn verify_execution(
                     failed = true;
                     let msg = format!("Created directory missing: {}", path.display());
                     failure_msgs.push(msg.clone());
-                    checks.push((
-                        format!("Directory created: {}", path.display()),
-                        false,
-                        msg,
-                    ));
+                    checks.push((format!("Directory created: {}", path.display()), false, msg));
                 } else if !existed_before {
                     checks.push((
                         format!("Directory created: {}", path.display()),
@@ -380,11 +372,7 @@ pub fn verify_execution(
                     failed = true;
                     let msg = format!("Deleted path still exists: {}", path.display());
                     failure_msgs.push(msg.clone());
-                    checks.push((
-                        format!("Path deleted: {}", path.display()),
-                        false,
-                        msg,
-                    ));
+                    checks.push((format!("Path deleted: {}", path.display()), false, msg));
                 } else if existed_before {
                     checks.push((
                         format!("Path deleted: {}", path.display()),
@@ -412,16 +400,12 @@ pub fn verify_execution(
                 after_state.len()
             );
             failure_msgs.push(msg.clone());
-            checks.push((
-                "No-op plan: filesystem unchanged".to_string(),
-                false,
-                msg,
-            ));
+            checks.push(("No-op plan: filesystem unchanged".to_string(), false, msg));
         } else {
             let mut changed = false;
             for (after_path, after_entry) in &after_state {
                 if let Some(before_entry) = before_map.get(after_path.as_path()) {
-                        if **before_entry != *after_entry {
+                    if **before_entry != *after_entry {
                         changed = true;
                         let msg = format!(
                             "Filesystem entry changed during no-op plan: {}",
@@ -503,10 +487,7 @@ mod tests {
         fs::write(dir.join("readme.png"), "png").unwrap();
     }
 
-    fn make_test_plan(
-        scope: &Path,
-        operations: Vec<FileSystemOperation>,
-    ) -> OperationPlan {
+    fn make_test_plan(scope: &Path, operations: Vec<FileSystemOperation>) -> OperationPlan {
         OperationPlan {
             id: "test-plan".to_string(),
             recommendation_id: "rec-test".to_string(),
@@ -533,14 +514,22 @@ mod tests {
         create_benchmark_fixture(dir.path());
 
         let pipeline = Pipeline::new(dir.path());
-        let intent = pipeline.parse_intent("Organize by type, do not execute").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize by type, do not execute")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
-        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(&intent.constraints));
+        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(
+            &intent.constraints,
+        ));
 
         let report = evaluate_coverage(&recommendation, &plan, &analysis);
-        assert_eq!(report.omitted, 0, "Should have 0 omitted items, got {:?}", report.items);
+        assert_eq!(
+            report.omitted, 0,
+            "Should have 0 omitted items, got {:?}",
+            report.items
+        );
         assert!(report.planned > 0, "Should have planned operations");
     }
 
@@ -550,7 +539,9 @@ mod tests {
         create_benchmark_fixture(dir.path());
 
         let pipeline = Pipeline::new(dir.path());
-        let intent = pipeline.parse_intent("Organize by type, do not execute").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize by type, do not execute")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
@@ -578,7 +569,10 @@ mod tests {
         }
 
         assert!(
-            !plan.operations.iter().any(|op| matches!(op, FileSystemOperation::Delete { .. })),
+            !plan
+                .operations
+                .iter()
+                .any(|op| matches!(op, FileSystemOperation::Delete { .. })),
             "Plan must not contain Delete operations for preserved directories"
         );
     }
@@ -589,7 +583,9 @@ mod tests {
         create_benchmark_fixture(dir.path());
 
         let pipeline = Pipeline::new(dir.path());
-        let intent = pipeline.parse_intent("Organize by type, do not execute").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize by type, do not execute")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
@@ -597,7 +593,9 @@ mod tests {
         let no_op_count_before = report_intentional_no_op_count(&recommendation, &plan, &analysis);
 
         let mut tampered_plan = plan.clone();
-        tampered_plan.operations.retain(|op| !matches!(op, FileSystemOperation::Move { .. }));
+        tampered_plan
+            .operations
+            .retain(|op| !matches!(op, FileSystemOperation::Move { .. }));
 
         let report = evaluate_coverage(&recommendation, &tampered_plan, &analysis);
 
@@ -647,11 +645,15 @@ mod tests {
         create_benchmark_fixture(dir.path());
 
         let pipeline = Pipeline::new(dir.path());
-        let intent = pipeline.parse_intent("Organize by type, do not execute").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize by type, do not execute")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
-        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(&intent.constraints));
+        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(
+            &intent.constraints,
+        ));
 
         for op in &mut plan.operations {
             if let FileSystemOperation::Move { source, .. } = op {
@@ -666,7 +668,7 @@ mod tests {
         let docs_move_count = recommendation
             .proposed_operations
             .iter()
-            .filter(|op| matches!(op, folder_intelligence::ProposedOperation::MoveCategory { content_type, file_count, .. } 
+            .filter(|op| matches!(op, folder_intelligence::ProposedOperation::MoveCategory { content_type, file_count, .. }
                 if content_type == "documents" && *file_count > 0))
             .count();
 
@@ -695,22 +697,31 @@ mod tests {
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
         plan.dry_run = false;
-        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(&intent.constraints));
+        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(
+            &intent.constraints,
+        ));
         let validation = pipeline.validate(&plan);
 
-        let apply_result = pipeline.apply(
-            &plan,
-            &validation,
-            &folder_intelligence::ApplyOptions {
-                force: false,
-                dry_run: false,
-            },
-        ).expect("apply should succeed");
+        let apply_result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &folder_intelligence::ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .expect("apply should succeed");
 
         assert!(apply_result.log.success_count > 0);
 
         let verification = verify_execution(&plan, &snapshot);
-        assert_eq!(verification.status, VerificationStatus::Passed, "Execution verification failed: {:?}", verification.checks);
+        assert_eq!(
+            verification.status,
+            VerificationStatus::Passed,
+            "Execution verification failed: {:?}",
+            verification.checks
+        );
     }
 
     #[test]
@@ -802,7 +813,11 @@ mod tests {
         );
 
         let after = capture_state(&scope);
-        assert_eq!(before.len(), after.len(), "Filesystem must be unchanged for no-op plan");
+        assert_eq!(
+            before.len(),
+            after.len(),
+            "Filesystem must be unchanged for no-op plan"
+        );
     }
 
     #[test]
@@ -811,21 +826,32 @@ mod tests {
         create_benchmark_fixture(dir.path());
 
         let pipeline = Pipeline::new(dir.path());
-        let intent = pipeline.parse_intent("Organize by type, do not execute").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize by type, do not execute")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
-        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(&intent.constraints));
+        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(
+            &intent.constraints,
+        ));
 
         let a_pdf = dir.path().join("readme.txt");
         assert!(a_pdf.exists());
         fs::remove_file(&a_pdf).unwrap();
 
         let validation = pipeline.validate(&plan);
-        assert!(validation.has_invalid, "Plan validation must catch missing source file");
+        assert!(
+            validation.has_invalid,
+            "Plan validation must catch missing source file"
+        );
 
         let decision = pipeline.policy_evaluate(&plan, &validation);
-        assert_eq!(decision, PolicyDecision::Rejected, "Policy must reject invalid plan");
+        assert_eq!(
+            decision,
+            PolicyDecision::Rejected,
+            "Policy must reject invalid plan"
+        );
     }
 
     #[test]
@@ -834,11 +860,15 @@ mod tests {
         create_benchmark_fixture(dir.path());
 
         let pipeline = Pipeline::new(dir.path());
-        let intent = pipeline.parse_intent("Organize by type, do not execute").unwrap();
+        let intent = pipeline
+            .parse_intent("Organize by type, do not execute")
+            .unwrap();
         let analysis = pipeline.analyze(&intent).unwrap();
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
-        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(&intent.constraints));
+        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(
+            &intent.constraints,
+        ));
 
         let docs_a = dir.path().join("Documents").join("readme.txt");
         fs::write(&docs_a, "blocking conflict").unwrap();
@@ -849,10 +879,17 @@ mod tests {
         });
 
         let validation = pipeline.validate(&plan);
-        assert!(validation.summary.conflicts > 0 || validation.has_conflicts || validation.has_invalid, "Plan validation must catch destination conflict");
+        assert!(
+            validation.summary.conflicts > 0 || validation.has_conflicts || validation.has_invalid,
+            "Plan validation must catch destination conflict"
+        );
 
         let decision = pipeline.policy_evaluate(&plan, &validation);
-        assert_eq!(decision, PolicyDecision::Rejected, "Policy must reject plan with conflict");
+        assert_eq!(
+            decision,
+            PolicyDecision::Rejected,
+            "Policy must reject plan with conflict"
+        );
     }
 
     #[test]
@@ -866,26 +903,34 @@ mod tests {
         let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
         let mut plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
         plan.dry_run = false;
-        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(&intent.constraints));
+        plan.validation_context = Some(folder_intelligence::PlanValidationContext::from(
+            &intent.constraints,
+        ));
         let validation = pipeline.validate(&plan);
 
-        let apply_result = pipeline.apply(
-            &plan,
-            &validation,
-            &folder_intelligence::ApplyOptions {
-                force: false,
-                dry_run: false,
-            },
-        ).expect("apply should succeed");
+        let apply_result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &folder_intelligence::ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .expect("apply should succeed");
 
         let log = &apply_result.log;
         assert_eq!(log.plan_id, plan.id);
         assert_eq!(log.total_entries, log.entries.len());
-        assert_eq!(log.success_count + log.failure_count + log.skipped_count, log.total_entries);
+        assert_eq!(
+            log.success_count + log.failure_count + log.skipped_count,
+            log.total_entries
+        );
 
         let log_path = dir.path().join("operation-log.json");
         log.save(&log_path).expect("should save log");
-        let reloaded = folder_intelligence::OperationLog::load(&log_path).expect("should reload log");
+        let reloaded =
+            folder_intelligence::OperationLog::load(&log_path).expect("should reload log");
         assert_eq!(log.plan_id, reloaded.plan_id);
         assert_eq!(log.success_count, reloaded.success_count);
     }
