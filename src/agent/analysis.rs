@@ -1,7 +1,8 @@
 use crate::agent::intent::{Goal, TaskIntent};
 use crate::classification::{
     build_classification_request, ClassificationDecision, ClassificationInput,
-    ClassificationProcessor, ClassificationResult, LlmClassifier, RuleBasedProcessor,
+    ClassificationProcessor, ClassificationResult, LlmClassifier, LlmStrategyInfo,
+    RuleBasedProcessor,
 };
 use crate::evidence::{DirectoryEvidence, ScanLimits, ScanResult};
 use crate::scanner::Scanner;
@@ -120,6 +121,7 @@ pub struct TaskAnalysis {
     pub content_groups: Vec<ContentGroup>,
     pub candidate_categories: Vec<CandidateCategory>,
     pub classification_results: Vec<ClassificationResult>,
+    pub organization_strategy: Option<LlmStrategyInfo>,
     pub anomalies: Vec<Anomaly>,
     pub ambiguities: Vec<Ambiguity>,
     pub evidence_gaps: Vec<EvidenceGap>,
@@ -206,7 +208,7 @@ impl EvidenceAnalyzer {
         let content_groups = Self::group_content(&scope_evidence);
         let structure_summary = Self::build_structure_summary(&scope_evidence, &content_groups);
         let candidate_categories = Self::find_candidate_categories(scope, &scan_metadata);
-        let classification_results = self.run_classification(
+        let (classification_results, organization_strategy) = self.run_classification(
             &scope_evidence,
             &candidate_categories,
             scan_metadata.clone(),
@@ -226,6 +228,7 @@ impl EvidenceAnalyzer {
             content_groups,
             candidate_categories,
             classification_results,
+            organization_strategy,
             anomalies,
             ambiguities,
             evidence_gaps,
@@ -378,21 +381,20 @@ impl EvidenceAnalyzer {
         candidates: &[CandidateCategory],
         scan_metadata: crate::evidence::ScanMetadata,
         instruction: Option<&str>,
-    ) -> Result<Vec<ClassificationResult>, AnalyzerError> {
-        if candidates.is_empty() {
-            return Ok(Vec::new());
+    ) -> Result<(Vec<ClassificationResult>, Option<LlmStrategyInfo>), AnalyzerError> {
+        if candidates.is_empty() && instruction.is_none() {
+            return Ok((Vec::new(), None));
         }
 
         if let Some(ref classifier) = self.llm_classifier {
-            return self.run_llm_classification(
-                scope_evidence,
-                candidates,
-                classifier,
-                instruction,
-            );
+            let (results, strategy) =
+                self.run_llm_classification(scope_evidence, candidates, classifier, instruction)?;
+            return Ok((results, strategy));
         }
 
-        self.run_rule_based_classification(scope_evidence, candidates, scan_metadata)
+        let results =
+            self.run_rule_based_classification(scope_evidence, candidates, scan_metadata)?;
+        Ok((results, None))
     }
 
     fn run_rule_based_classification(
@@ -443,7 +445,7 @@ impl EvidenceAnalyzer {
         candidates: &[CandidateCategory],
         classifier: &LlmClassifier,
         instruction: Option<&str>,
-    ) -> Result<Vec<ClassificationResult>, AnalyzerError> {
+    ) -> Result<(Vec<ClassificationResult>, Option<LlmStrategyInfo>), AnalyzerError> {
         let allowed_categories: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
         let allowed_category_paths: Vec<(String, PathBuf)> = candidates
             .iter()
@@ -457,7 +459,7 @@ impl EvidenceAnalyzer {
             .classify(&request, &scope_evidence.path, &allowed_category_paths)
             .map_err(|e| AnalyzerError::ClassificationFailed(e.to_string()))?;
 
-        Ok(vec![result])
+        Ok((vec![result.classification], result.strategy))
     }
 
     fn detect_anomalies(evidence: &DirectoryEvidence) -> Vec<Anomaly> {

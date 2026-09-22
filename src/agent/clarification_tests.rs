@@ -61,6 +61,7 @@ fn test_clarification_complete_when_no_questions() {
     let recommendation = Recommendation {
         id: "test-rec".to_string(),
         strategy: RecommendationStrategy::CategoryBased,
+        strategy_info: None,
         rationale: "Test rationale".to_string(),
         proposed_categories: Vec::new(),
         proposed_operations: Vec::new(),
@@ -671,6 +672,7 @@ fn test_constraint_violation_displayed_in_summarize() {
     let recommendation = Recommendation {
         id: "test-rec".to_string(),
         strategy: crate::agent::recommendation::RecommendationStrategy::CategoryBased,
+        strategy_info: None,
         rationale: "Test rationale".to_string(),
         proposed_categories: Vec::new(),
         proposed_operations: vec![

@@ -1,5 +1,6 @@
 use crate::agent::analysis::TaskAnalysis;
 use crate::agent::intent::{Goal, TaskIntent};
+use crate::classification::LlmOrganizationStrategy;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -10,8 +11,30 @@ pub enum RecommendationStrategy {
     ProjectBased,
     Chronological,
     BySize,
+    ByAuthor,
+    ByTitle,
+    ByYear,
     PreserveExisting,
+    Unknown,
     Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct StrategyInfo {
+    pub strategy: RecommendationStrategy,
+    pub confidence: f64,
+    pub reason: Option<String>,
+}
+
+impl Default for StrategyInfo {
+    fn default() -> Self {
+        StrategyInfo {
+            strategy: RecommendationStrategy::Unknown,
+            confidence: 0.0,
+            reason: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,6 +146,7 @@ pub enum RecommendationWarning {
 pub struct Recommendation {
     pub id: String,
     pub strategy: RecommendationStrategy,
+    pub strategy_info: Option<StrategyInfo>,
     pub rationale: String,
     pub proposed_categories: Vec<ProposedCategory>,
     pub proposed_operations: Vec<ProposedOperation>,
@@ -176,7 +200,7 @@ impl RecommendationEngine {
     ) -> Result<Recommendation, RecommendationError> {
         self.validate_analysis(intent, analysis)?;
 
-        let strategy = self.determine_strategy(intent);
+        let strategy = self.determine_strategy(intent, analysis);
         let proposed_categories = self.propose_categories(intent, analysis, &strategy);
         let mut proposed_operations =
             self.generate_operations(intent, analysis, &proposed_categories);
@@ -196,9 +220,19 @@ impl RecommendationEngine {
 
         let id = format!("rec-{}", generated_at);
 
+        let strategy_info = analysis
+            .organization_strategy
+            .as_ref()
+            .map(|s| StrategyInfo {
+                strategy: map_llm_strategy(&s.strategy),
+                confidence: s.confidence,
+                reason: s.reason.clone(),
+            });
+
         Ok(Recommendation {
             id,
             strategy,
+            strategy_info,
             rationale,
             proposed_categories,
             proposed_operations,
@@ -233,7 +267,18 @@ impl RecommendationEngine {
         Ok(())
     }
 
-    fn determine_strategy(&self, intent: &TaskIntent) -> RecommendationStrategy {
+    fn determine_strategy(
+        &self,
+        intent: &TaskIntent,
+        analysis: &TaskAnalysis,
+    ) -> RecommendationStrategy {
+        if let Some(ref llm_strategy) = analysis.organization_strategy {
+            let mapped = map_llm_strategy(&llm_strategy.strategy);
+            if mapped != RecommendationStrategy::Unknown {
+                return mapped;
+            }
+        }
+
         match &intent.goal {
             Goal::Organize { purpose, .. } => match purpose.as_str() {
                 "by_category" | "by_type" => RecommendationStrategy::CategoryBased,
@@ -699,9 +744,18 @@ impl RecommendationEngine {
             RecommendationStrategy::ProjectBased => "project-based".to_string(),
             RecommendationStrategy::Chronological => "chronological".to_string(),
             RecommendationStrategy::BySize => "by-size".to_string(),
+            RecommendationStrategy::ByAuthor => "by-author".to_string(),
+            RecommendationStrategy::ByTitle => "by-title".to_string(),
+            RecommendationStrategy::ByYear => "by-year".to_string(),
             RecommendationStrategy::PreserveExisting => "preserve existing".to_string(),
+            RecommendationStrategy::Unknown => "unknown".to_string(),
             RecommendationStrategy::Custom(s) => s.clone(),
         };
+
+        let strategy_reason = analysis
+            .organization_strategy
+            .as_ref()
+            .and_then(|s| s.reason.as_ref());
 
         let total_files = analysis.structure_summary.total_files;
         let total_dirs = analysis.structure_summary.total_directories;
@@ -723,35 +777,86 @@ impl RecommendationEngine {
             .map(|r| r.confidence)
             .unwrap_or(0.5);
 
+        let strategy_reason_text = strategy_reason
+            .map(|r| format!(" Strategy reason: {}.", r))
+            .unwrap_or_default();
+
+        let evidence_gaps_text = if !analysis.evidence_gaps.is_empty() {
+            let gaps: Vec<&str> = analysis
+                .evidence_gaps
+                .iter()
+                .map(|g| g.description.as_str())
+                .collect();
+            format!(" Evidence gaps: {}.", gaps.join("; "))
+        } else {
+            String::new()
+        };
+
         format!(
             "Analyzed {} directory ({} files, {} subdirectories). \
             Detected {} content type groups. \
-            Strategy: {} (purpose: {}). \
+            Strategy: {} (purpose: {}).{} \
             Proposed {} categories. \
             Classification confidence: {:.0}%. \
-            {} ambiguities and {} evidence gaps require attention.",
+            {} ambiguities and {} evidence gaps require attention.{}",
             analysis.scope_evidence.path.display(),
             total_files,
             total_dirs,
             num_groups,
             strategy_name,
             purpose,
+            strategy_reason_text,
             num_categories,
             classification_confidence * 100.0,
             analysis.ambiguities.len(),
             analysis.evidence_gaps.len(),
+            evidence_gaps_text,
         )
     }
 
     fn strategy_name(&self, intent: &TaskIntent) -> String {
-        match self.determine_strategy(intent) {
-            RecommendationStrategy::CategoryBased => "category".to_string(),
-            RecommendationStrategy::ProjectBased => "project".to_string(),
-            RecommendationStrategy::Chronological => "chronological".to_string(),
-            RecommendationStrategy::BySize => "size".to_string(),
-            RecommendationStrategy::PreserveExisting => "preserve".to_string(),
-            RecommendationStrategy::Custom(s) => s,
+        match &intent.goal {
+            Goal::Organize { purpose, .. } => match purpose.as_str() {
+                "by_category" | "by_type" => "category".to_string(),
+                "by_project" | "work/project" => "project".to_string(),
+                "by_date" => "chronological".to_string(),
+                "by_size" => "size".to_string(),
+                "general_organization" => "category".to_string(),
+                custom => custom.to_string(),
+            },
+            Goal::Reorganize { strategy, .. } => {
+                if let Some(s) = strategy {
+                    match s.as_str() {
+                        "by_category" | "by_type" => "category".to_string(),
+                        "by_project" => "project".to_string(),
+                        "by_date" => "chronological".to_string(),
+                        "by_size" => "size".to_string(),
+                        other => other.to_string(),
+                    }
+                } else {
+                    "category".to_string()
+                }
+            }
+            Goal::Clean { rules, .. } => {
+                if rules.is_empty() {
+                    "preserve".to_string()
+                } else {
+                    "category".to_string()
+                }
+            }
         }
+    }
+}
+
+pub fn map_llm_strategy(llm: &LlmOrganizationStrategy) -> RecommendationStrategy {
+    match llm {
+        LlmOrganizationStrategy::ByAuthor => RecommendationStrategy::ByAuthor,
+        LlmOrganizationStrategy::ByTitle => RecommendationStrategy::ByTitle,
+        LlmOrganizationStrategy::ByType => RecommendationStrategy::CategoryBased,
+        LlmOrganizationStrategy::ByYear => RecommendationStrategy::ByYear,
+        LlmOrganizationStrategy::PreserveExisting => RecommendationStrategy::PreserveExisting,
+        LlmOrganizationStrategy::CategoryBased => RecommendationStrategy::CategoryBased,
+        LlmOrganizationStrategy::Unknown => RecommendationStrategy::Unknown,
     }
 }
 

@@ -926,6 +926,9 @@ fn do_organize(
     };
 
     if result.plan.operations.is_empty() {
+        let recommendation_preview =
+            render_recommendation_summary(&result.recommendation, &result.analysis);
+        eprintln!("{}", recommendation_preview);
         eprintln!("Nothing to organize. The folder is already organized.");
         let json = serde_json::to_string_pretty(&result.plan)?;
         write_output(&json, output)?;
@@ -974,17 +977,12 @@ fn do_organize(
     Ok(())
 }
 
-fn render_organize_preview(
-    plan: &crate::agent::OperationPlan,
-    _validation: &crate::agent::ValidationResult,
+fn render_recommendation_summary(
     recommendation: &crate::agent::Recommendation,
-    analysis: &crate::agent::TaskAnalysis,
+    _analysis: &crate::agent::TaskAnalysis,
 ) -> String {
-    use std::collections::HashMap;
-
     let mut output = String::new();
 
-    // === AI Organization Recommendation ===
     output.push_str("=== AI Organization Recommendation ===\n");
     output.push_str(&format!(
         "  Strategy:  {}\n",
@@ -993,12 +991,38 @@ fn render_organize_preview(
             crate::agent::RecommendationStrategy::ProjectBased => "Project-based",
             crate::agent::RecommendationStrategy::Chronological => "Chronological",
             crate::agent::RecommendationStrategy::BySize => "By size",
+            crate::agent::RecommendationStrategy::ByAuthor => "By author",
+            crate::agent::RecommendationStrategy::ByTitle => "By title",
+            crate::agent::RecommendationStrategy::ByYear => "By year",
             crate::agent::RecommendationStrategy::PreserveExisting => "Preserve existing",
+            crate::agent::RecommendationStrategy::Unknown => "Unknown",
             crate::agent::RecommendationStrategy::Custom(ref s) => s,
         }
     ));
     if !recommendation.rationale.is_empty() {
         output.push_str(&format!("  Rationale: {}\n", recommendation.rationale));
+    }
+    if let Some(strategy_info) = &recommendation.strategy_info {
+        let strategy_name = match strategy_info.strategy {
+            crate::agent::RecommendationStrategy::ByAuthor => "By author",
+            crate::agent::RecommendationStrategy::ByTitle => "By title",
+            crate::agent::RecommendationStrategy::ByYear => "By year",
+            crate::agent::RecommendationStrategy::CategoryBased => "Category-based",
+            crate::agent::RecommendationStrategy::PreserveExisting => "Preserve existing",
+            crate::agent::RecommendationStrategy::Custom(ref s) => s,
+            _ => "Unknown",
+        };
+        let reason_text = strategy_info
+            .reason
+            .as_ref()
+            .map(|r| format!("\n  Strategy reason: {}", r))
+            .unwrap_or_default();
+        output.push_str(&format!(
+            "  Organization Strategy: {} (confidence: {:.0}%){}\n",
+            strategy_name,
+            strategy_info.confidence * 100.0,
+            reason_text
+        ));
     }
     output.push_str(&format!(
         "  Confidence: {:.1}%\n",
@@ -1022,6 +1046,22 @@ fn render_organize_preview(
             output.push_str(&format!("    • {}\n", op.description()));
         }
     }
+
+    output
+}
+
+fn render_organize_preview(
+    plan: &crate::agent::OperationPlan,
+    _validation: &crate::agent::ValidationResult,
+    recommendation: &crate::agent::Recommendation,
+    analysis: &crate::agent::TaskAnalysis,
+) -> String {
+    use std::collections::HashMap;
+
+    let mut output = String::new();
+
+    output.push_str(&render_recommendation_summary(recommendation, analysis));
+    output.push('\n');
 
     if let Some(cr) = analysis.classification_results.first() {
         output.push_str(&format!(
@@ -1117,7 +1157,7 @@ fn render_organize_preview(
 
     output.push('\n');
 
-    // === Operation Plan ===
+    // === Operation Plan
     output.push_str("=== Organize Preview ===\n");
     output.push_str(&format!("Scope: {}\n", plan.scope.display()));
     output.push_str(&format!("Plan ID: {}\n\n", plan.id));
@@ -1320,6 +1360,7 @@ mod tests {
             content_groups: vec![],
             candidate_categories: vec![],
             classification_results: vec![],
+            organization_strategy: None,
             anomalies: vec![],
             ambiguities: vec![],
             evidence_gaps: vec![],
@@ -1491,6 +1532,7 @@ mod tests {
         let recommendation = Recommendation {
             id: "rec-1".to_string(),
             strategy: RecommendationStrategy::CategoryBased,
+            strategy_info: None,
             rationale: "test".to_string(),
             proposed_categories: vec![],
             proposed_operations: vec![ProposedOperation::LeaveUnclassified {
@@ -1588,6 +1630,7 @@ mod tests {
         let recommendation = Recommendation {
             id: "rec-1".to_string(),
             strategy: RecommendationStrategy::CategoryBased,
+            strategy_info: None,
             rationale: "test".to_string(),
             proposed_categories: vec![],
             proposed_operations: vec![],
@@ -1750,6 +1793,7 @@ mod tests {
         let recommendation = Recommendation {
             id: "rec-1".to_string(),
             strategy: RecommendationStrategy::CategoryBased,
+            strategy_info: None,
             rationale: "test".to_string(),
             proposed_categories: vec![],
             proposed_operations: vec![],

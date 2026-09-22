@@ -44,7 +44,9 @@ impl LlmClassificationRequest {
             \n\
             You will receive filesystem observations (relative paths, filenames, extensions, sizes) and a list of ALLOWED category names.\n\
             \n\
-            Return a JSON array where each entry classifies one file:\n\
+            Return a JSON object with:\n\
+            1. organization_strategy: An entity with type (one of: by_author, by_title, by_type, by_year, preserve_existing, category_based, unknown), confidence (0.0-1.0), and optional reason.\n\
+            2. classifications: A JSON array where each entry classifies one file:\n\
             [{{\"path\": \"relative/path/file.pdf\", \"category\": \"Documents\", \"confidence\": 0.95, \"reason\": \"Filename indicates an invoice document.\"}}]\n\
             \n\
             Rules:\n\
@@ -56,6 +58,9 @@ impl LlmClassificationRequest {
             6. Confidence must be a number between 0.0 and 1.0 (inclusive).\n\
             7. Paths must be relative and must not escape the analyzed scope.\n\
             8. You do NOT have filesystem execution authority. Your output is only used for classification decisions.\n\
+            9. If the user explicitly specifies an organization method (e.g. by author, by title), preserve that intent in the organization_strategy.\n\
+            10. Do NOT invent metadata (e.g. author names) that is not available in the filesystem evidence.\n\
+            11. If the requested strategy cannot be supported by available evidence, report the limitation instead of silently changing the strategy.\n\
             {instruction_section}\n\
             Allowed categories:\n\
             {categories_json}\n\
@@ -63,7 +68,7 @@ impl LlmClassificationRequest {
             Observations:\n\
             {observations_json}\n\
             \n\
-            Respond ONLY with the JSON array."
+            Respond ONLY with the JSON object."
         )
     }
 }
@@ -77,10 +82,58 @@ pub struct LlmClassificationItem {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmOrganizationStrategy {
+    ByAuthor,
+    ByTitle,
+    ByType,
+    ByYear,
+    PreserveExisting,
+    CategoryBased,
+    Unknown,
+}
+
+impl Default for LlmOrganizationStrategy {
+    fn default() -> Self {
+        LlmOrganizationStrategy::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmStrategyInfo {
+    #[serde(default, rename = "type")]
+    pub strategy: LlmOrganizationStrategy,
+    #[serde(default)]
+    pub confidence: f64,
+    pub reason: Option<String>,
+}
+
+impl Default for LlmStrategyInfo {
+    fn default() -> Self {
+        LlmStrategyInfo {
+            strategy: LlmOrganizationStrategy::Unknown,
+            confidence: 0.0,
+            reason: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LlmClassificationOutput {
     #[serde(default)]
+    pub organization_strategy: Option<LlmStrategyInfo>,
+    #[serde(default)]
     pub classifications: Vec<LlmClassificationItem>,
+}
+
+impl LlmClassificationOutput {
+    pub fn from_classifications(items: Vec<LlmClassificationItem>) -> Self {
+        LlmClassificationOutput {
+            organization_strategy: None,
+            classifications: items,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +172,12 @@ pub enum LlmClassificationError {
     InvalidPath(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct ClassificationWithStrategy {
+    pub classification: ClassificationResult,
+    pub strategy: Option<LlmStrategyInfo>,
+}
+
 pub struct LlmClassifier {
     provider: Arc<dyn LlmProvider>,
 }
@@ -137,7 +196,7 @@ impl LlmClassifier {
         request: &LlmClassificationRequest,
         target_path: &Path,
         allowed_category_paths: &[(String, PathBuf)],
-    ) -> Result<ClassificationResult, LlmClassificationError> {
+    ) -> Result<ClassificationWithStrategy, LlmClassificationError> {
         let prompt = request.prompt();
         let messages = vec![ChatMessage::user(prompt)];
 
@@ -146,26 +205,30 @@ impl LlmClassifier {
             .chat(&messages)
             .map_err(|e| LlmClassificationError::ProviderError(e.to_string()))?;
 
-        let raw_output: Vec<LlmClassificationItem> =
-            serde_json::from_str(&response).map_err(|e| {
-                LlmClassificationError::MalformedJson(format!(
-                    "Failed to parse LLM response as JSON array: {}",
-                    e
-                ))
-            })?;
+        let output: LlmClassificationOutput = serde_json::from_str(&response).map_err(|e| {
+            LlmClassificationError::MalformedJson(format!(
+                "Failed to parse LLM response as JSON object: {}",
+                e
+            ))
+        })?;
 
         let validated = validate_classifications(
-            &raw_output,
+            &output.classifications,
             &collect_observed_paths(request),
             &collect_allowed_categories(request),
         )?;
 
-        Ok(adapter_to_classification_result(
+        let classification = adapter_to_classification_result(
             &validated,
             target_path,
             allowed_category_paths,
             request.observations.len(),
-        ))
+        );
+
+        Ok(ClassificationWithStrategy {
+            classification,
+            strategy: output.organization_strategy,
+        })
     }
 }
 
@@ -190,7 +253,9 @@ fn validate_classifications(
 
     for item in items {
         validate_path(&item.path, observed_paths)?;
-        validate_category(&item.category, allowed_categories)?;
+        if !allowed_categories.is_empty() {
+            validate_category(&item.category, allowed_categories)?;
+        }
         validate_confidence(item.confidence)?;
         result.push(item.clone());
     }
@@ -416,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_valid_structured_classification() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95,"reason":"Filename indicates a document file."}]"#;
+        let json = r#"{"organization_strategy":{"type":"by_type","confidence":0.9,"reason":"Standard classification"},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95,"reason":"Filename indicates a document file."}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -438,7 +503,7 @@ mod tests {
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
 
-        let classification = result.unwrap();
+        let classification = result.unwrap().classification;
         assert_eq!(
             classification.decision,
             ClassificationDecision::MoveExisting
@@ -454,6 +519,240 @@ mod tests {
             classification.classification_reason,
             Some("Filename indicates a document file.".to_string())
         );
+    }
+
+    #[test]
+    fn test_valid_structured_classification_with_strategy() {
+        let json = r#"{"organization_strategy":{"type":"by_author","confidence":0.95,"reason":"User requested author-based organization."},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95,"reason":"Filename indicates a document file."}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: Some("按照作者整理".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths: Vec<(String, PathBuf)> = vec![
+            (
+                "Documents".to_string(),
+                PathBuf::from("/test/scope/Documents"),
+            ),
+            ("Images".to_string(), PathBuf::from("/test/scope/Images")),
+        ];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok(), "should succeed: {:?}", result.err());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::ByAuthor);
+        assert_eq!(strategy.confidence, 0.95);
+        assert_eq!(
+            strategy.reason.as_deref(),
+            Some("User requested author-based organization.")
+        );
+
+        let classification = with_strategy.classification;
+        assert_eq!(
+            classification.decision,
+            ClassificationDecision::MoveExisting
+        );
+    }
+
+    #[test]
+    fn test_user_intent_by_title() {
+        let json = r#"{"organization_strategy":{"type":"by_title","confidence":0.9,"reason":"User requested title-based organization."},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.9}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: Some("按照漫畫名稱整理".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![
+            (
+                "Documents".to_string(),
+                PathBuf::from("/test/scope/Documents"),
+            ),
+            ("Images".to_string(), PathBuf::from("/test/scope/Images")),
+        ];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::ByTitle);
+    }
+
+    #[test]
+    fn test_user_intent_by_type() {
+        let json = r#"{"organization_strategy":{"type":"by_type","confidence":0.9,"reason":"User requested type-based organization."},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.9}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: Some("按照檔案類型整理".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![
+            (
+                "Documents".to_string(),
+                PathBuf::from("/test/scope/Documents"),
+            ),
+            ("Images".to_string(), PathBuf::from("/test/scope/Images")),
+        ];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::ByType);
+    }
+
+    #[test]
+    fn test_user_intent_preserve_existing() {
+        let json = r#"{"organization_strategy":{"type":"preserve_existing","confidence":0.8,"reason":"User requested preserving existing structure."},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.9}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string()],
+            instruction: Some("不要重新整理現有資料夾，只整理散落的檔案".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![(
+            "Documents".to_string(),
+            PathBuf::from("/test/scope/Documents"),
+        )];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::PreserveExisting);
+    }
+
+    #[test]
+    fn test_no_instruction_returns_no_strategy() {
+        let json =
+            r#"{"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![(
+            "Documents".to_string(),
+            PathBuf::from("/test/scope/Documents"),
+        )];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        assert!(with_strategy.strategy.is_none());
+    }
+
+    #[test]
+    fn test_missing_evidence_does_not_hallucinate_author() {
+        let json = r#"{"organization_strategy":{"type":"by_author","confidence":0.7,"reason":"User requested author-based organization. Evidence gap: Author metadata could not be reliably determined from the available filesystem evidence."},"classifications":[]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string()],
+            instruction: Some("按照作者整理".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![(
+            "Documents".to_string(),
+            PathBuf::from("/test/scope/Documents"),
+        )];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::ByAuthor);
+        assert!(strategy.reason.is_some());
+        assert!(strategy.reason.unwrap().contains("Evidence gap"));
+    }
+
+    #[test]
+    fn test_explicit_intent_not_downgraded_to_category() {
+        let json = r#"{"organization_strategy":{"type":"by_author","confidence":0.95,"reason":"User explicitly requested author-based organization."},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: Some("按照作者整理".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![
+            (
+                "Documents".to_string(),
+                PathBuf::from("/test/scope/Documents"),
+            ),
+            ("Images".to_string(), PathBuf::from("/test/scope/Images")),
+        ];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::ByAuthor);
+        assert_ne!(strategy.strategy, LlmOrganizationStrategy::ByType);
+    }
+
+    #[test]
+    fn test_year_intent_produces_by_year() {
+        let json = r#"{"organization_strategy":{"type":"by_year","confidence":0.85,"reason":"User requested year-based organization."},"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.9}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string()],
+            instruction: Some("按照年份整理".to_string()),
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![(
+            "Documents".to_string(),
+            PathBuf::from("/test/scope/Documents"),
+        )];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+
+        let with_strategy = result.unwrap();
+        let strategy = with_strategy.strategy.expect("should have strategy");
+        assert_eq!(strategy.strategy, LlmOrganizationStrategy::ByYear);
     }
 
     #[test]
@@ -484,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_missing_path() {
-        let json = r#"[{"category":"Documents","confidence":0.9}]"#;
+        let json = r#"{"classifications":[{"category":"Documents","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -510,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_missing_category() {
-        let json = r#"[{"path":"doc.pdf","confidence":0.9}]"#;
+        let json = r#"{"classifications":[{"path":"doc.pdf","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -536,7 +835,8 @@ mod tests {
 
     #[test]
     fn test_invalid_confidence() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":1.5}]"#;
+        let json =
+            r#"{"classifications":[{"path":"doc.pdf","category":"Documents","confidence":1.5}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -564,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_unknown_category() {
-        let json = r#"[{"path":"doc.pdf","category":"InventedCategory","confidence":0.9}]"#;
+        let json = r#"{"classifications":[{"path":"doc.pdf","category":"InventedCategory","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -595,7 +895,7 @@ mod tests {
 
     #[test]
     fn test_absolute_path_rejection() {
-        let json = r#"[{"path":"/etc/passwd","category":"Documents","confidence":0.9}]"#;
+        let json = r#"{"classifications":[{"path":"/etc/passwd","category":"Documents","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -623,7 +923,7 @@ mod tests {
 
     #[test]
     fn test_path_traversal_rejection() {
-        let json = r#"[{"path":"../../etc/passwd","category":"Documents","confidence":0.9}]"#;
+        let json = r#"{"classifications":[{"path":"../../etc/passwd","category":"Documents","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -651,7 +951,7 @@ mod tests {
 
     #[test]
     fn test_unobserved_file_rejection() {
-        let json = r#"[{"path":"nonexistent.pdf","category":"Documents","confidence":0.9}]"#;
+        let json = r#"{"classifications":[{"path":"nonexistent.pdf","category":"Documents","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -679,7 +979,7 @@ mod tests {
 
     #[test]
     fn test_incomplete_llm_response() {
-        let json = r#"[]"#;
+        let json = r#"{"classifications":[]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -705,7 +1005,7 @@ mod tests {
             result.err()
         );
 
-        let classification = result.unwrap();
+        let classification = result.unwrap().classification;
         assert_eq!(
             classification.decision,
             ClassificationDecision::LeaveUnclassified
@@ -717,7 +1017,7 @@ mod tests {
 
     #[test]
     fn test_uncertain_classification_preserved_as_unclassified() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.3,"reason":"Low confidence in classification."}]"#;
+        let json = r#"{"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.3,"reason":"Low confidence in classification."}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -739,7 +1039,7 @@ mod tests {
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok());
 
-        let classification = result.unwrap();
+        let classification = result.unwrap().classification;
         assert_eq!(
             classification.decision,
             ClassificationDecision::MoveExisting
@@ -753,7 +1053,8 @@ mod tests {
 
     #[test]
     fn test_provider_independent_classification() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95}]"#;
+        let json =
+            r#"{"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95}]}"#;
 
         let ollama_provider = mock_provider(vec![("chat", json)]);
         let classifier_ollama = LlmClassifier::new(Arc::new(ollama_provider));
@@ -780,13 +1081,14 @@ mod tests {
 
         assert!(result_o.is_ok());
         assert!(result_p.is_ok());
-        assert_eq!(result_o.as_ref().unwrap().confidence, 0.95);
-        assert_eq!(result_p.as_ref().unwrap().confidence, 0.95);
+        assert_eq!(result_o.as_ref().unwrap().classification.confidence, 0.95);
+        assert_eq!(result_p.as_ref().unwrap().classification.confidence, 0.95);
     }
 
     #[test]
     fn test_reason_field_optional_in_llm_response() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95}]"#;
+        let json =
+            r#"{"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -805,7 +1107,7 @@ mod tests {
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
 
-        let classification = result.unwrap();
+        let classification = result.unwrap().classification;
         assert_eq!(classification.classification_reason, None);
     }
 
@@ -825,7 +1127,7 @@ mod tests {
                     "model": "llama2",
                     "message": {
                         "role": "assistant",
-                        "content": "[{\"path\":\"doc.pdf\",\"category\":\"Documents\",\"confidence\":0.9}]"
+                        "content": "{\"classifications\":[{\"path\":\"doc.pdf\",\"category\":\"Documents\",\"confidence\":0.9}]}"
                     },
                     "done": true
                 }"#,
@@ -855,7 +1157,7 @@ mod tests {
 
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
-        assert_eq!(result.unwrap().confidence, 0.9);
+        assert_eq!(result.unwrap().classification.confidence, 0.9);
 
         mock.assert();
     }
@@ -881,7 +1183,7 @@ mod tests {
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": "[{\"path\":\"doc.pdf\",\"category\":\"Documents\",\"confidence\":0.95}]"
+                            "content": "{\"classifications\":[{\"path\":\"doc.pdf\",\"category\":\"Documents\",\"confidence\":0.95}]}"
                         },
                         "finish_reason": "stop"
                     }]
@@ -913,7 +1215,7 @@ mod tests {
 
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
-        assert_eq!(result.unwrap().confidence, 0.95);
+        assert_eq!(result.unwrap().classification.confidence, 0.95);
 
         mock.assert();
     }

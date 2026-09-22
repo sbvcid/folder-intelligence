@@ -2376,7 +2376,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.95}]}"#,
         );
 
         let options = PipelineOptions {
@@ -2402,7 +2402,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.95}]}"#,
         );
 
         let options = PipelineOptions {
@@ -2426,7 +2426,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.95}]}"#,
         );
 
         let intent = pipeline
@@ -2516,7 +2516,7 @@ mod tests {
         let scope = create_llm_test_scope(&dir);
 
         let classifier = make_llm_classifier(
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.9}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.9}]}"#,
         );
         let pipeline = Pipeline::new(&scope).with_llm_classifier(classifier);
 
@@ -2544,7 +2544,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.95}]}"#,
         );
 
         let intent = pipeline
@@ -2589,8 +2589,9 @@ mod tests {
         fs::create_dir_all(&scope).unwrap();
         fs::write(scope.join("doc.pdf"), "content").unwrap();
 
-        let classifier =
-            make_llm_classifier(r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95}]"#);
+        let classifier = make_llm_classifier(
+            r#"{"classifications":[{"path":"doc.pdf","category":"Documents","confidence":0.95}]}"#,
+        );
         let pipeline = Pipeline::new(&scope).with_llm_classifier(classifier);
 
         let intent = pipeline
@@ -2615,7 +2616,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.95}]}"#,
         );
 
         let intent = pipeline
@@ -2635,7 +2636,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"InventedCategory","confidence":0.9}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"InventedCategory","confidence":0.9}]}"#,
         );
 
         let intent = pipeline
@@ -2679,7 +2680,7 @@ mod tests {
 
         let pipeline = pipeline_with_llm(
             &scope,
-            r#"[{"path":"readme.txt","category":"Documents","confidence":0.95}]"#,
+            r#"{"classifications":[{"path":"readme.txt","category":"Documents","confidence":0.95}]}"#,
         );
 
         let files_before = collect_files(&scope);
