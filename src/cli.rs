@@ -917,7 +917,12 @@ fn do_organize(scope: PathBuf, yes: bool, dry_run: bool, output: Option<PathBuf>
         return Ok(());
     }
 
-    let preview = render_organize_preview(&result.plan, &result.validation, &result.recommendation);
+    let preview = render_organize_preview(
+        &result.plan,
+        &result.validation,
+        &result.recommendation,
+        &result.analysis,
+    );
     eprintln!("{}", preview);
 
     if dry_run {
@@ -958,11 +963,115 @@ fn render_organize_preview(
     plan: &crate::agent::OperationPlan,
     _validation: &crate::agent::ValidationResult,
     recommendation: &crate::agent::Recommendation,
+    analysis: &crate::agent::TaskAnalysis,
 ) -> String {
     use std::collections::HashMap;
 
     let mut output = String::new();
 
+    // === AI Organization Recommendation ===
+    output.push_str("=== AI Organization Recommendation ===\n");
+    output.push_str(&format!(
+        "  Strategy:  {}\n",
+        match recommendation.strategy {
+            crate::agent::RecommendationStrategy::CategoryBased => "Category-based",
+            crate::agent::RecommendationStrategy::ProjectBased => "Project-based",
+            crate::agent::RecommendationStrategy::Chronological => "Chronological",
+            crate::agent::RecommendationStrategy::BySize => "By size",
+            crate::agent::RecommendationStrategy::PreserveExisting => "Preserve existing",
+            crate::agent::RecommendationStrategy::Custom(ref s) => s,
+        }
+    ));
+    if !recommendation.rationale.is_empty() {
+        output.push_str(&format!("  Rationale: {}\n", recommendation.rationale));
+    }
+    output.push_str(&format!(
+        "  Confidence: {:.1}%\n",
+        recommendation.confidence * 100.0
+    ));
+
+    if !recommendation.proposed_categories.is_empty() {
+        output.push_str("\n  Proposed Categories:\n");
+        for cat in &recommendation.proposed_categories {
+            let status = if cat.is_existing { "existing" } else { "new" };
+            output.push_str(&format!(
+                "    • {} ({}) - {}\n",
+                cat.name, status, cat.purpose
+            ));
+        }
+    }
+
+    if !recommendation.proposed_operations.is_empty() {
+        output.push_str("\n  AI Suggested Operations:\n");
+        for op in &recommendation.proposed_operations {
+            output.push_str(&format!("    • {}\n", op.description()));
+        }
+    }
+
+    if let Some(cr) = analysis.classification_results.first() {
+        output.push_str(&format!(
+            "  Classification: {} (confidence: {:.1}%)\n",
+            match cr.decision {
+                crate::classification::ClassificationDecision::MoveExisting => "Move to existing",
+                crate::classification::ClassificationDecision::CreateCategory =>
+                    "Create new category",
+                crate::classification::ClassificationDecision::LeaveUnclassified =>
+                    "Leave unclassified",
+                crate::classification::ClassificationDecision::AskUser => "Requires user input",
+            },
+            cr.confidence * 100.0
+        ));
+    }
+
+    if !analysis.classification_results.is_empty() {
+        output.push_str("\n  File-classification Explanations:\n");
+        for cr in &analysis.classification_results {
+            let decision_str = match cr.decision {
+                crate::classification::ClassificationDecision::MoveExisting => "Move to existing",
+                crate::classification::ClassificationDecision::CreateCategory => {
+                    "Create new category"
+                }
+                crate::classification::ClassificationDecision::LeaveUnclassified => {
+                    "Leave unclassified"
+                }
+                crate::classification::ClassificationDecision::AskUser => "Requires user input",
+            };
+            let dest = cr
+                .selected_candidate
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| cr.proposed_category_name.clone().unwrap_or_default());
+            output.push_str(&format!(
+                "    {} → {} | {} ({:.0}%)\n",
+                cr.target_path.display(),
+                dest,
+                decision_str,
+                cr.confidence * 100.0
+            ));
+            if let Some(reason) = &cr.classification_reason {
+                output.push_str(&format!("      Reason: {}\n", reason));
+            }
+            if !cr.supporting_evidence.is_empty() {
+                output.push_str("      Evidence:\n");
+                for ev in &cr.supporting_evidence {
+                    output.push_str(&format!(
+                        "        - {} ({})\n",
+                        ev.description, ev.evidence_type
+                    ));
+                }
+            }
+            if !cr.warnings.is_empty() {
+                output.push_str("      Warnings:\n");
+                for w in &cr.warnings {
+                    output.push_str(&format!("        - {:?}\n", w));
+                }
+            }
+        }
+    }
+
+    output.push('\n');
+
+    // === Operation Plan ===
     output.push_str("=== Organize Preview ===\n");
     output.push_str(&format!("Scope: {}\n", plan.scope.display()));
     output.push_str(&format!("Plan ID: {}\n\n", plan.id));
@@ -1066,7 +1175,11 @@ fn render_organize_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{EstimatedImpact, FileSystemOperation, PlanValidationContext};
+    use crate::agent::intent::Goal;
+    use crate::agent::{
+        EstimatedImpact, FileSystemOperation, PlanValidationContext, TaskAnalysis, TaskIntent,
+    };
+    use crate::evidence::{DirectoryEvidence, ScanStats, TextFilePresence};
 
     fn make_test_plan(scope: &Path) -> crate::agent::OperationPlan {
         crate::agent::OperationPlan {
@@ -1089,6 +1202,83 @@ mod tests {
             dry_run: false,
             created_at: 0,
             validation_context: Some(PlanValidationContext::default()),
+        }
+    }
+
+    fn minimal_analysis() -> TaskAnalysis {
+        let scope = PathBuf::from("/test/scope");
+        TaskAnalysis {
+            intent: TaskIntent {
+                goal: Goal::Organize {
+                    scope: scope.clone(),
+                    purpose: "Organize this folder by category".to_string(),
+                },
+                constraints: crate::agent::ConstraintSet {
+                    preserve_existing_folders: false,
+                    merge_duplicates: false,
+                    archive_old: None,
+                    auto_delete_temps: false,
+                    max_interactive_questions: 10,
+                },
+                user_hints: std::collections::HashMap::new(),
+                unknown_factors: vec![],
+            },
+            scope_evidence: DirectoryEvidence {
+                path: scope.clone(),
+                name: "test".to_string(),
+                parent_path: None,
+                depth: 0,
+                file_count: 0,
+                directory_count: 0,
+                total_size: 0,
+                extension_histogram: std::collections::HashMap::new(),
+                dominant_extensions: vec![],
+                identifier_summary: Default::default(),
+                child_directory_names: vec![],
+                filename_sample: vec![],
+                notable_filenames: vec![],
+                syntactic_identifiers: vec![],
+                text_file_presence: TextFilePresence::default(),
+                is_empty: true,
+                partial_scan: false,
+                scanned_at: 0,
+                scan_duration_ms: 0,
+                schema_version: "2.0.0".to_string(),
+            },
+            scan_metadata: crate::evidence::ScanMetadata {
+                _type: "scan".to_string(),
+                schema_version: "2.0.0".to_string(),
+                scan_batch_id: "test".to_string(),
+                scan_started_at: 0,
+                root_path: scope.clone(),
+                limits: crate::evidence::ScanLimits::default(),
+                stats: crate::evidence::ScanStats {
+                    directories_scanned: 0,
+                    files_encountered: 0,
+                    bytes_scanned: 0,
+                    dirs_skipped: 0,
+                    files_skipped: 0,
+                    errors: vec![],
+                    duration_ms: 0,
+                },
+            },
+            structure_summary: crate::agent::StructureSummary {
+                total_files: 0,
+                total_directories: 0,
+                total_size: 0,
+                content_groups: vec![],
+                depth_levels: 0,
+                has_mixed_content_dirs: false,
+                partial_scan: false,
+            },
+            content_groups: vec![],
+            candidate_categories: vec![],
+            classification_results: vec![],
+            anomalies: vec![],
+            ambiguities: vec![],
+            evidence_gaps: vec![],
+            analyzed_at: 0,
+            analysis_duration_ms: 0,
         }
     }
 
@@ -1269,9 +1459,11 @@ mod tests {
             generated_at: 0,
         };
 
-        let preview = render_organize_preview(&plan, &validation, &recommendation);
+        let preview =
+            render_organize_preview(&plan, &validation, &recommendation, &minimal_analysis());
 
         assert!(preview.contains("=== Organize Preview ==="));
+        assert!(preview.contains("AI Organization Recommendation"));
         assert!(preview.contains("Files to move:"));
         assert!(preview.contains(&format!(
             "  -> {} (2 files)",
@@ -1292,6 +1484,98 @@ mod tests {
         assert!(preview.contains("Directories to create: 2"));
         assert!(preview.contains("Unclassified"));
         assert!(preview.contains("unknown type"));
+    }
+
+    #[test]
+    fn test_organize_preview_shows_classification_explanations() {
+        use crate::agent::{
+            ProposedOperation, Recommendation, RecommendationStrategy, ValidationResult,
+            ValidationSummary,
+        };
+        use crate::classification::{ClassificationDecision, ClassificationResult};
+
+        let scope = PathBuf::from("/test/scope");
+        let plan = crate::agent::OperationPlan {
+            id: "explain-test".to_string(),
+            recommendation_id: "rec-1".to_string(),
+            scope: scope.clone(),
+            operations: vec![FileSystemOperation::Move {
+                source: scope.join("doc.pdf"),
+                dest: scope.join("Documents").join("doc.pdf"),
+            }],
+            estimated_impact: EstimatedImpact {
+                files_moved: 1,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 1,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(PlanValidationContext::default()),
+        };
+
+        let validation = ValidationResult {
+            plan_id: "explain-test".to_string(),
+            scope: scope.clone(),
+            validated_operations: vec![],
+            summary: ValidationSummary::new(),
+            has_blocked: false,
+            has_conflicts: false,
+            has_invalid: false,
+            has_warnings: false,
+            executable_operations: 1,
+        };
+
+        let recommendation = Recommendation {
+            id: "rec-1".to_string(),
+            strategy: RecommendationStrategy::CategoryBased,
+            rationale: "test".to_string(),
+            proposed_categories: vec![],
+            proposed_operations: vec![],
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            generated_at: 0,
+        };
+
+        let mut analysis = minimal_analysis();
+        analysis.classification_results = vec![ClassificationResult {
+            target_path: scope.join("doc.pdf"),
+            decision: ClassificationDecision::MoveExisting,
+            selected_candidate: Some(scope.join("Documents")),
+            proposed_category_name: Some("Documents".to_string()),
+            confidence: 0.95,
+            confidence_band: crate::classification::ConfidenceBand::High,
+            candidates_considered: 2,
+            supporting_evidence: vec![crate::classification::SupportingEvidence {
+                evidence_type: "LLMClassification".to_string(),
+                description: "LLM classified as 'Documents'".to_string(),
+                score: 0.95,
+            }],
+            alternatives: vec![],
+            uncertainty: vec![],
+            classification_reason: Some("Filename and content indicate a document.".to_string()),
+            warnings: vec![],
+            classified_at: 0,
+            schema_version: "3.0.0".to_string(),
+            provider: Some("gemini-3.5-flash".to_string()),
+            model: Some("openai-compatible".to_string()),
+        }];
+
+        let preview = render_organize_preview(&plan, &validation, &recommendation, &analysis);
+
+        assert!(preview.contains("File-classification Explanations:"));
+        assert!(preview.contains("doc.pdf"));
+        assert!(preview.contains("Documents"));
+        assert!(preview.contains("Move to existing"));
+        assert!(preview.contains("Reason: Filename and content indicate a document."));
+        assert!(preview.contains("Evidence:"));
+        assert!(preview.contains("LLM classified as 'Documents'"));
     }
 
     #[test]
@@ -1397,7 +1681,8 @@ mod tests {
             generated_at: 0,
         };
 
-        let preview = render_organize_preview(&plan, &validation, &recommendation);
+        let preview =
+            render_organize_preview(&plan, &validation, &recommendation, &minimal_analysis());
 
         // Files should be sorted alphabetically within destination group
         let apple_pos = preview

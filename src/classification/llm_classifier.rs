@@ -38,7 +38,7 @@ impl LlmClassificationRequest {
             You will receive filesystem observations (relative paths, filenames, extensions, sizes) and a list of ALLOWED category names.\n\
             \n\
             Return a JSON array where each entry classifies one file:\n\
-            [{{\"path\": \"relative/path/file.pdf\", \"category\": \"Documents\", \"confidence\": 0.95}}]\n\
+            [{{\"path\": \"relative/path/file.pdf\", \"category\": \"Documents\", \"confidence\": 0.95, \"reason\": \"Filename indicates an invoice document.\"}}]\n\
             \n\
             Rules:\n\
             1. You MUST only use category names from the ALLOWED list.\n\
@@ -66,6 +66,8 @@ pub struct LlmClassificationItem {
     pub path: String,
     pub category: String,
     pub confidence: f64,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -255,6 +257,7 @@ fn adapter_to_classification_result(
     let mut confidence = 0.0;
     let mut confidence_band = ConfidenceBand::Low;
     let mut decision = ClassificationDecision::LeaveUnclassified;
+    let mut classification_reason: Option<String> = None;
 
     let best = validated.iter().max_by(|a, b| {
         a.confidence
@@ -274,6 +277,7 @@ fn adapter_to_classification_result(
             selected_candidate = Some(cat_path.clone());
             proposed_category_name = Some(best_item.category.clone());
             decision = ClassificationDecision::MoveExisting;
+            classification_reason = best_item.reason.clone();
 
             supporting_evidence.push(SupportingEvidence {
                 evidence_type: "LLMClassification".to_string(),
@@ -313,6 +317,7 @@ fn adapter_to_classification_result(
         supporting_evidence,
         alternatives,
         uncertainty,
+        classification_reason,
         warnings: vec![],
         classified_at: now,
         schema_version: CLASSIFICATION_SCHEMA_VERSION.to_string(),
@@ -402,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_valid_structured_classification() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95}]"#;
+        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95,"reason":"Filename indicates a document file."}]"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -434,6 +439,10 @@ mod tests {
         assert_eq!(
             classification.proposed_category_name.as_deref(),
             Some("Documents")
+        );
+        assert_eq!(
+            classification.classification_reason,
+            Some("Filename indicates a document file.".to_string())
         );
     }
 
@@ -689,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_uncertain_classification_preserved_as_unclassified() {
-        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.3}]"#;
+        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.3,"reason":"Low confidence in classification."}]"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
 
@@ -716,6 +725,10 @@ mod tests {
             ClassificationDecision::MoveExisting
         );
         assert_eq!(classification.confidence, 0.3);
+        assert_eq!(
+            classification.classification_reason,
+            Some("Low confidence in classification.".to_string())
+        );
     }
 
     #[test]
@@ -748,6 +761,30 @@ mod tests {
         assert!(result_p.is_ok());
         assert_eq!(result_o.as_ref().unwrap().confidence, 0.95);
         assert_eq!(result_p.as_ref().unwrap().confidence, 0.95);
+    }
+
+    #[test]
+    fn test_reason_field_optional_in_llm_response() {
+        let json = r#"[{"path":"doc.pdf","category":"Documents","confidence":0.95}]"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: sample_observations(),
+            allowed_categories: vec!["Documents".to_string()],
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![(
+            "Documents".to_string(),
+            PathBuf::from("/test/scope/Documents"),
+        )];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok(), "should succeed: {:?}", result.err());
+
+        let classification = result.unwrap();
+        assert_eq!(classification.classification_reason, None);
     }
 
     #[test]

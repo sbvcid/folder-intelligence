@@ -78,6 +78,8 @@ pub struct ClassificationResult {
     pub supporting_evidence: Vec<SupportingEvidence>,
     pub alternatives: Vec<AlternativeCandidate>,
     pub uncertainty: Vec<UncertaintyReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification_reason: Option<String>,
     pub warnings: Vec<Warning>,
     pub classified_at: u64,
     pub schema_version: String,

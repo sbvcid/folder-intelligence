@@ -442,6 +442,10 @@ fn scan_single_directory(
             child_directory_names.push(file_name_str.clone());
             subdirs.push(path.clone());
         } else if ft.is_file() {
+            if is_current_executable(&path) {
+                state.stats.files_skipped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             if file_count >= state.limits.max_files_per_dir as u64 {
                 state.stats.files_skipped.fetch_add(1, Ordering::Relaxed);
                 partial = true;
@@ -623,6 +627,9 @@ fn scan_directory_partial(
                 child_directory_names.push(name.to_string());
             }
         } else if ft.is_file() {
+            if is_current_executable(&entry.path()) {
+                break;
+            }
             if file_count >= state.limits.max_files_per_dir as u64 {
                 break;
             }
@@ -745,6 +752,20 @@ fn is_notable_filename(name: &str) -> bool {
     ];
 
     NOTABLE_PATTERNS.iter().any(|p| name.starts_with(p))
+}
+
+pub fn is_current_executable(path: &Path) -> bool {
+    static CURRENT_EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let current_exe = CURRENT_EXE.get_or_init(|| std::env::current_exe().ok());
+
+    match current_exe {
+        Some(exe) => {
+            let exe_resolved = exe.canonicalize().unwrap_or_else(|_| exe.clone());
+            let path_resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            exe_resolved == path_resolved
+        }
+        None => false,
+    }
 }
 
 fn update_text_file_presence(
@@ -1737,5 +1758,27 @@ mod tests {
             "should have skipped at least 3 excluded dirs, got {}",
             result.metadata.stats.dirs_skipped
         );
+    }
+
+    #[test]
+    fn test_current_executable_excluded_from_scan() {
+        let exe_path = std::env::current_exe().unwrap();
+
+        assert!(is_current_executable(&exe_path));
+
+        let exe_parent = exe_path.parent().unwrap().to_path_buf();
+        let scanner = Scanner::new(&exe_parent);
+        let result = scanner.scan().unwrap();
+
+        for ev in &result.evidence {
+            for f in &ev.filename_sample {
+                let full = ev.path.join(f);
+                assert!(
+                    !is_current_executable(&full),
+                    "current executable should not appear in filename_sample: {}",
+                    full.display()
+                );
+            }
+        }
     }
 }

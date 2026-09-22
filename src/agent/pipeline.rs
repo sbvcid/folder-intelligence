@@ -291,7 +291,6 @@ impl Pipeline {
                     }
                 }
                 ProposedOperation::CreateCategory { name, .. } => {
-                    // Check if plan has a CreateDir for this category
                     let has_matching_create = plan.operations.iter().any(|plan_op| {
                         if let crate::agent::plan::FileSystemOperation::CreateDir { path } = plan_op
                         {
@@ -303,9 +302,12 @@ impl Pipeline {
                         }
                     });
                     if !has_matching_create {
-                        return Err(PipelineError::Plan(PlanError::ConflictingOperations(
-                            format!("Integrity violation: Recommendation proposes CreateCategory '{}' but plan has no matching create directory operation", name),
-                        )));
+                        let dest = plan.scope.join(Self::category_to_dir_name(name));
+                        if !dest.exists() {
+                            return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                                format!("Integrity violation: Recommendation proposes CreateCategory '{}' but plan has no matching create directory operation", name),
+                            )));
+                        }
                     }
                 }
                 ProposedOperation::LeaveUnclassified { .. } => {
@@ -321,6 +323,23 @@ impl Pipeline {
             }
         }
         Ok(())
+    }
+
+    fn category_to_dir_name(category: &str) -> String {
+        match category {
+            "document_storage" => "Documents",
+            "image_storage" => "Images",
+            "archive_storage" => "Archive",
+            "media_storage" => "Media",
+            "code_storage" => "Code",
+            "installer_storage" => "Installers",
+            "data_storage" => "Data",
+            "config_storage" => "Config",
+            "misc_storage" => "Misc",
+            "temp_files" => "Temp",
+            _ => category,
+        }
+        .to_string()
     }
 
     /// Validate a plan against its persisted constraints and current filesystem state.

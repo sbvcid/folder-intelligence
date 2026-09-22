@@ -387,7 +387,7 @@ impl PlanGenerator {
         let mut results = Vec::new();
         let target_exts = self.content_type_extensions(content_type);
 
-        for filename in &evidence.notable_filenames {
+        for filename in &evidence.filename_sample {
             let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
 
             if target_exts.contains(&ext.as_str()) {

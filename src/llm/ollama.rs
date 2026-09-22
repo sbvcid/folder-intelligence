@@ -45,8 +45,9 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(endpoint: String, model: String, timeout: Duration) -> Self {
+        let normalized = ensure_chat_endpoint(&endpoint);
         Self {
-            endpoint,
+            endpoint: normalized,
             model,
             timeout,
         }
@@ -63,6 +64,28 @@ impl OllamaProvider {
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
+}
+
+fn ensure_chat_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+
+    if trimmed.ends_with("/api/chat") {
+        return trimmed.to_string();
+    }
+
+    if trimmed.ends_with("/api/") {
+        return format!("{}chat", trimmed);
+    }
+
+    if trimmed.ends_with("/api") {
+        return format!("{}/chat", trimmed);
+    }
+
+    if trimmed.ends_with('/') {
+        return format!("{}api/chat", trimmed);
+    }
+
+    format!("{}/api/chat", trimmed)
 }
 
 impl LlmProvider for OllamaProvider {
@@ -264,6 +287,49 @@ mod tests {
         assert_eq!(provider.endpoint(), "http://localhost:11434/api/chat");
         assert_eq!(provider.model(), "llama2");
         assert_eq!(provider.timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_ollama_endpoint_construction() {
+        let cases = [
+            ("http://localhost:11434", "http://localhost:11434/api/chat"),
+            ("http://localhost:11434/", "http://localhost:11434/api/chat"),
+            (
+                "http://localhost:11434/api",
+                "http://localhost:11434/api/chat",
+            ),
+            (
+                "http://localhost:11434/api/",
+                "http://localhost:11434/api/chat",
+            ),
+            (
+                "http://localhost:11434/api/chat",
+                "http://localhost:11434/api/chat",
+            ),
+            (
+                "http://my-ollama-server:11434",
+                "http://my-ollama-server:11434/api/chat",
+            ),
+            (
+                "http://my-ollama-server:11434/",
+                "http://my-ollama-server:11434/api/chat",
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let provider = OllamaProvider::new(
+                input.to_string(),
+                "llama2".to_string(),
+                Duration::from_secs(30),
+            );
+            assert_eq!(
+                provider.endpoint(),
+                expected,
+                "endpoint '{}' should normalize to '{}'",
+                input,
+                expected
+            );
+        }
     }
 
     #[test]

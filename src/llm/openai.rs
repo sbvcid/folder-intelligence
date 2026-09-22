@@ -46,6 +46,13 @@ fn normalize_endpoint(endpoint: &str) -> String {
 struct OpenAiChatRequest {
     model: String,
     messages: Vec<OpenAiChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ResponseFormat {
+    r#type: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -98,6 +105,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
                     content: m.content.clone(),
                 })
                 .collect(),
+            response_format: Some(ResponseFormat {
+                r#type: "json_object".to_string(),
+            }),
         };
 
         let response = client
@@ -107,15 +117,29 @@ impl LlmProvider for OpenAiCompatibleProvider {
             .json(&request)
             .send()
             .map_err(|e| {
+                let mut chain = String::new();
+                let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&e);
+                let mut depth = 0;
+                while let Some(err) = current {
+                    if !chain.is_empty() {
+                        chain.push_str(" -> ");
+                    }
+                    chain.push_str(&format!("{:?}", err));
+                    current = std::error::Error::source(err);
+                    depth += 1;
+                    if depth > 10 {
+                        break;
+                    }
+                }
                 if e.is_timeout() {
                     LlmError::Timeout(self.timeout)
                 } else if e.is_connect() {
                     LlmError::ProviderError(format!(
-                        "Failed to connect to provider at '{}': {}",
-                        self.base_url, e
+                        "Failed to connect to provider at '{}': {}\nError chain: {}",
+                        self.base_url, e, chain
                     ))
                 } else {
-                    LlmError::ProviderError(format!("Request error: {}", e))
+                    LlmError::ProviderError(format!("Request error: {}\nError chain: {}", e, chain))
                 }
             })?;
 
@@ -130,7 +154,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 return Err(LlmError::MissingApiKey("***".to_string()));
             }
             if status.as_u16() == 429 {
-                return Err(LlmError::HttpError(429, "Rate limited".to_string()));
+                return Err(LlmError::HttpError(429, format!("Rate limited: {}", body)));
             }
             let msg = error
                 .and_then(|e| e.error)
@@ -249,21 +273,25 @@ mod tests {
     }
 
     #[test]
-    fn test_request_does_not_include_response_format() {
+    fn test_request_includes_json_response_format() {
         let request = OpenAiChatRequest {
             model: "gemma4:12b".to_string(),
             messages: vec![OpenAiChatMessage {
                 role: "user".to_string(),
                 content: "test".to_string(),
             }],
+            response_format: Some(ResponseFormat {
+                r#type: "json_object".to_string(),
+            }),
         };
 
         let json = serde_json::to_string(&request).expect("should serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("should parse JSON");
 
-        assert!(
-            !parsed.as_object().unwrap().contains_key("response_format"),
-            "request must NOT include response_format"
+        assert_eq!(
+            parsed["response_format"]["type"].as_str(),
+            Some("json_object"),
+            "request should include response_format for JSON mode"
         );
     }
 
