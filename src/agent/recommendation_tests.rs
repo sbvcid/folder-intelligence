@@ -887,13 +887,8 @@ fn test_phase15_leave_unclassified_zero_mutation() {
     }
 
     let engine = RecommendationEngine;
-    let recommendation = engine
-        .recommend(&intent, &analysis)
-        .expect("should recommend");
-    assert!(
-        recommendation.proposed_operations.is_empty(),
-        "LeaveUnclassified must produce zero mutations"
-    );
+    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    assert!(recommendation.proposed_operations.is_empty(), "LeaveUnclassified must produce zero mutations");
 }
 
 #[test]
@@ -912,13 +907,8 @@ fn test_phase15_ask_user_zero_mutation() {
     }
 
     let engine = RecommendationEngine;
-    let recommendation = engine
-        .recommend(&intent, &analysis)
-        .expect("should recommend");
-    assert!(
-        recommendation.proposed_operations.is_empty(),
-        "AskUser must produce zero mutations"
-    );
+    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    assert!(recommendation.proposed_operations.is_empty(), "AskUser must produce zero mutations");
 }
 
 #[test]
@@ -936,15 +926,7 @@ fn test_phase15_no_classification_result_no_fallback() {
     analysis.classification_results.clear();
 
     let engine = RecommendationEngine;
-    let recommendation = engine
-        .recommend(&intent, &analysis)
-        .expect("should recommend");
-    assert!(
-        recommendation.proposed_categories.is_empty(),
-        "No classification result must not trigger content-type fallback for categories"
-    );
-    assert!(
-        recommendation.proposed_operations.is_empty(),
-        "No classification result must not trigger content-type fallback for operations"
-    );
+    let recommendation = engine.recommend(&intent, &analysis).expect("should recommend");
+    assert!(recommendation.proposed_categories.is_empty(), "No classification result must not trigger content-type fallback for categories");
+    assert!(recommendation.proposed_operations.is_empty(), "No classification result must not trigger content-type fallback for operations");
 }
