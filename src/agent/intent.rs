@@ -55,6 +55,30 @@ pub enum IntentParseError {
     UnrecognizedIntent,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UserIntent {
+    pub instruction: Option<String>,
+}
+
+impl UserIntent {
+    pub fn new(instruction: Option<String>) -> Self {
+        let instruction = instruction.filter(|s| !s.trim().is_empty());
+        Self { instruction }
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.instruction.is_none()
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.instruction.is_some()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.instruction.is_none()
+    }
+}
+
 impl std::fmt::Display for IntentParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

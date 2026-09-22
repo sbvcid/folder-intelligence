@@ -27,7 +27,9 @@ pub use executor::{
     OperationLog, RecoveryResult, UndoConflict, UndoLogEntry, UndoResult,
 };
 #[allow(unused_imports)]
-pub use intent::{CleanRule, ConstraintSet, Goal, IntentParseError, TaskIntent, TaskIntentParser};
+pub use intent::{
+    CleanRule, ConstraintSet, Goal, IntentParseError, TaskIntent, TaskIntentParser, UserIntent,
+};
 #[allow(unused_imports)]
 pub use operation_guard::{ExecutionResult, FileMetadata, OperationGuard, Precondition, ScopeLock};
 #[allow(unused_imports)]

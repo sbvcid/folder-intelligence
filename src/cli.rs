@@ -89,6 +89,7 @@ pub enum Commands {
         yes: bool,
         dry_run: bool,
         output: Option<PathBuf>,
+        instruction: Option<String>,
     },
     Chat {
         config: Option<PathBuf>,
@@ -112,12 +113,14 @@ impl Cli {
                 let output = args.opt_value_from_os_str("--output", |s| {
                     Ok::<_, anyhow::Error>(PathBuf::from(s))
                 })?;
+                let instruction = args.opt_value_from_str("--instruction")?;
                 let scope = resolve_default_scope()?;
                 Commands::Organize {
                     scope,
                     yes,
                     dry_run,
                     output,
+                    instruction,
                 }
             }
             Some(cmd) => match cmd.as_str() {
@@ -348,6 +351,7 @@ impl Cli {
                     let output = args.opt_value_from_os_str("--output", |s| {
                         Ok::<_, anyhow::Error>(PathBuf::from(s))
                     })?;
+                    let instruction = args.opt_value_from_str("--instruction")?;
                     let scope = args
                         .opt_free_from_os_str::<PathBuf, anyhow::Error>(|s| Ok(PathBuf::from(s)))?
                         .unwrap_or_else(|| {
@@ -360,6 +364,7 @@ impl Cli {
                         yes,
                         dry_run,
                         output,
+                        instruction,
                     }
                 }
                 "undo" => {
@@ -766,8 +771,9 @@ impl Cli {
                 yes,
                 dry_run,
                 output,
+                instruction,
             } => {
-                do_organize(scope, yes, dry_run, output)?;
+                do_organize(scope, yes, dry_run, output, instruction)?;
             }
             Commands::Chat {
                 config,
@@ -843,11 +849,19 @@ fn build_llm_classifier(
     }
 }
 
-fn do_organize(scope: PathBuf, yes: bool, dry_run: bool, output: Option<PathBuf>) -> Result<()> {
+fn do_organize(
+    scope: PathBuf,
+    yes: bool,
+    dry_run: bool,
+    output: Option<PathBuf>,
+    instruction: Option<String>,
+) -> Result<()> {
     let mut pipeline = Pipeline::new(&scope);
 
     if let Some((config, classifier)) = build_llm_classifier()? {
-        pipeline = pipeline.with_llm_classifier(classifier);
+        pipeline = pipeline
+            .with_llm_classifier(classifier)
+            .with_classifier_instruction(instruction.clone());
         eprintln!(
             "Using LLM classifier (provider: {}, model: {})",
             config.provider, config.model
@@ -860,6 +874,7 @@ fn do_organize(scope: PathBuf, yes: bool, dry_run: bool, output: Option<PathBuf>
             dry_run: false,
             execute: false,
             force: false,
+            user_intent: Some(crate::agent::UserIntent::new(instruction)),
         },
     ) {
         Ok(result) => result,
@@ -1649,7 +1664,7 @@ mod tests {
         let scope = dir.path().join("downloads");
         std::fs::create_dir_all(&scope).unwrap();
 
-        let result = do_organize(scope, false, false, None);
+        let result = do_organize(scope, false, false, None, None);
 
         assert!(result.is_err(), "empty folder should produce an error");
         let err_msg = result.unwrap_err().to_string();
@@ -1669,7 +1684,7 @@ mod tests {
         let doc_content = b"pdf content";
         std::fs::write(scope.join("doc.pdf"), doc_content).unwrap();
 
-        let result = do_organize(scope.clone(), true, false, None);
+        let result = do_organize(scope.clone(), true, false, None, None);
 
         match &result {
             Ok(_) => {
@@ -1810,7 +1825,7 @@ mod tests {
         let scope = dir.path().join("not_a_dir");
         std::fs::write(&scope, "test").unwrap();
 
-        let result = do_organize(scope, false, false, None);
+        let result = do_organize(scope, false, false, None, None);
         assert!(result.is_err(), "non-directory scope should error");
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1818,6 +1833,167 @@ mod tests {
             "error should mention not a directory: got '{}'",
             err_msg
         );
+    }
+
+    #[test]
+    fn test_user_intent_new_empty_string_becomes_none() {
+        let intent = crate::agent::UserIntent::new(Some("".to_string()));
+        assert!(
+            intent.is_none(),
+            "empty string instruction should become None"
+        );
+        assert!(intent.is_empty());
+    }
+
+    #[test]
+    fn test_user_intent_new_whitespace_becomes_none() {
+        let intent = crate::agent::UserIntent::new(Some("   ".to_string()));
+        assert!(
+            intent.is_none(),
+            "whitespace-only instruction should become None"
+        );
+    }
+
+    #[test]
+    fn test_user_intent_new_preserved() {
+        let text = "這個資料夾都是漫畫，我想按照作者整理";
+        let intent = crate::agent::UserIntent::new(Some(text.to_string()));
+        assert_eq!(intent.instruction.as_deref(), Some(text));
+        assert!(!intent.is_empty());
+    }
+
+    #[test]
+    fn test_user_intent_none_when_no_instruction() {
+        let intent = crate::agent::UserIntent::new(None);
+        assert!(intent.is_none());
+        assert!(intent.is_empty());
+    }
+
+    #[test]
+    fn test_parse_organize_with_instruction() {
+        let mut args = pico_args::Arguments::from_vec(vec![
+            std::ffi::OsString::from("organize"),
+            std::ffi::OsString::from("/test/scope"),
+            std::ffi::OsString::from("--instruction"),
+            std::ffi::OsString::from("這個資料夾都是漫畫，我想按照作者整理"),
+        ]);
+        let cli = Cli::parse_from_args(&mut args).unwrap();
+        match cli.command {
+            Commands::Organize { instruction, .. } => {
+                assert_eq!(
+                    instruction.as_deref(),
+                    Some("這個資料夾都是漫畫，我想按照作者整理")
+                );
+            }
+            _ => panic!("expected Commands::Organize"),
+        }
+    }
+
+    #[test]
+    fn test_parse_organize_without_instruction() {
+        let mut args = pico_args::Arguments::from_vec(vec![
+            std::ffi::OsString::from("organize"),
+            std::ffi::OsString::from("/test/scope"),
+        ]);
+        let cli = Cli::parse_from_args(&mut args).unwrap();
+        match cli.command {
+            Commands::Organize { instruction, .. } => {
+                assert!(instruction.is_none());
+            }
+            _ => panic!("expected Commands::Organize"),
+        }
+    }
+
+    #[test]
+    fn test_parse_organize_empty_instruction_becomes_none() {
+        let mut args = pico_args::Arguments::from_vec(vec![
+            std::ffi::OsString::from("organize"),
+            std::ffi::OsString::from("/test/scope"),
+            std::ffi::OsString::from("--instruction"),
+            std::ffi::OsString::from(""),
+        ]);
+        let cli = Cli::parse_from_args(&mut args).unwrap();
+        match cli.command {
+            Commands::Organize { instruction, .. } => {
+                assert!(
+                    instruction.is_some(),
+                    "pico_args returns Some(EmptyString) for empty --instruction"
+                );
+                let intent = crate::agent::UserIntent::new(instruction);
+                assert!(
+                    intent.is_none(),
+                    "empty string should normalize to None via UserIntent::new"
+                );
+            }
+            _ => panic!("expected Commands::Organize"),
+        }
+    }
+
+    #[test]
+    fn test_user_intent_unicode_preserved() {
+        let text = "這個資料夾都是漫畫，我想按照作者整理";
+        let intent = crate::agent::UserIntent::new(Some(text.to_string()));
+        let serialized = serde_json::to_string(&intent).unwrap();
+        let deserialized: crate::agent::UserIntent = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.instruction.as_deref(), Some(text));
+    }
+
+    #[test]
+    fn test_user_intent_in_pipeline_result() {
+        use crate::agent::{Pipeline, PipelineOptions};
+
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().to_path_buf();
+        std::fs::write(scope.join("test.txt"), "hello").unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let result = pipeline.run(
+            "Organize this folder by category",
+            &PipelineOptions {
+                dry_run: true,
+                execute: false,
+                force: false,
+                user_intent: Some(crate::agent::UserIntent::new(Some(
+                    "Organize by date".to_string(),
+                ))),
+            },
+        );
+
+        assert!(
+            result.is_ok(),
+            "pipeline should succeed: {:?}",
+            result.err()
+        );
+        let result = result.unwrap();
+        assert!(result.user_intent.is_some());
+        assert_eq!(
+            result.user_intent.as_ref().unwrap().instruction,
+            Some("Organize by date".to_string())
+        );
+    }
+
+    #[test]
+    fn test_user_intent_none_in_pipeline_result() {
+        use crate::agent::{Pipeline, PipelineOptions};
+
+        let dir = tempfile::tempdir().unwrap();
+        let scope = dir.path().to_path_buf();
+        std::fs::write(scope.join("test.txt"), "hello").unwrap();
+
+        let pipeline = Pipeline::new(&scope);
+        let result = pipeline.run(
+            "Organize this folder by category",
+            &PipelineOptions {
+                dry_run: true,
+                execute: false,
+                force: false,
+                user_intent: None,
+            },
+        );
+
+        assert!(result.is_ok());
+        let result = result.unwrap();
+        assert!(result.user_intent.is_none());
     }
 
     #[test]
@@ -1829,7 +2005,7 @@ mod tests {
         std::fs::write(&original_file, "test content").unwrap();
         std::fs::create_dir_all(scope.join("Documents")).unwrap();
 
-        let result = do_organize(scope.clone(), false, false, None);
+        let result = do_organize(scope.clone(), false, false, None, None);
 
         match &result {
             Ok(_) => {

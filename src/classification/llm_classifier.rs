@@ -23,6 +23,7 @@ pub struct FileObservation {
 pub struct LlmClassificationRequest {
     pub observations: Vec<FileObservation>,
     pub allowed_categories: Vec<String>,
+    pub instruction: Option<String>,
 }
 
 impl LlmClassificationRequest {
@@ -31,6 +32,12 @@ impl LlmClassificationRequest {
             .unwrap_or_else(|_| "[]".to_string());
         let observations_json =
             serde_json::to_string_pretty(&self.observations).unwrap_or_else(|_| "[]".to_string());
+
+        let instruction_section = if let Some(instruction) = &self.instruction {
+            format!("\n            User Instruction:\n            {instruction}\n\n")
+        } else {
+            String::new()
+        };
 
         format!(
             "You are a file classification assistant. Your task is to classify files into pre-existing categories.\n\
@@ -49,7 +56,7 @@ impl LlmClassificationRequest {
             6. Confidence must be a number between 0.0 and 1.0 (inclusive).\n\
             7. Paths must be relative and must not escape the analyzed scope.\n\
             8. You do NOT have filesystem execution authority. Your output is only used for classification decisions.\n\
-            \n\
+            {instruction_section}\n\
             Allowed categories:\n\
             {categories_json}\n\
             \n\
@@ -329,6 +336,7 @@ fn adapter_to_classification_result(
 pub fn build_classification_request(
     target: &crate::evidence::DirectoryEvidence,
     allowed_categories: &[String],
+    instruction: Option<&str>,
 ) -> LlmClassificationRequest {
     let observations: Vec<FileObservation> = target
         .filename_sample
@@ -354,6 +362,7 @@ pub fn build_classification_request(
     LlmClassificationRequest {
         observations,
         allowed_categories: allowed_categories.to_vec(),
+        instruction: instruction.map(|s| s.to_string()),
     }
 }
 
@@ -414,6 +423,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -455,6 +465,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -480,6 +491,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -505,6 +517,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -530,6 +543,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -557,6 +571,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -587,6 +602,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -614,6 +630,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -641,6 +658,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -668,6 +686,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -705,6 +724,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string(), "Images".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -746,6 +766,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -772,6 +793,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -822,6 +844,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");
@@ -879,6 +902,7 @@ mod tests {
         let request = LlmClassificationRequest {
             observations: sample_observations(),
             allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
         };
 
         let target_path = PathBuf::from("/test/scope");

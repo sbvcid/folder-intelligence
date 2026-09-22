@@ -69,6 +69,12 @@ impl Pipeline {
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_classifier_instruction(mut self, instruction: Option<String>) -> Self {
+        self.analyzer = self.analyzer.with_classifier_instruction(instruction);
+        self
+    }
+
     /// Parse a natural language request into a structured `TaskIntent`.
     pub fn parse_intent(&self, request: &str) -> Result<TaskIntent, PipelineError> {
         Ok(self.parser.parse(request)?)
@@ -613,6 +619,7 @@ impl Pipeline {
 
         Ok(PipelineResult {
             intent,
+            user_intent: options.user_intent.clone(),
             analysis,
             recommendation,
             plan,
@@ -637,6 +644,7 @@ pub struct PipelineOptions {
     pub force: bool,
     pub dry_run: bool,
     pub execute: bool,
+    pub user_intent: Option<crate::agent::UserIntent>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -649,6 +657,7 @@ pub struct ApplyOptions {
 #[derive(Debug, Clone)]
 pub struct PipelineResult {
     pub intent: TaskIntent,
+    pub user_intent: Option<crate::agent::UserIntent>,
     pub analysis: TaskAnalysis,
     pub recommendation: Recommendation,
     pub plan: OperationPlan,
@@ -814,6 +823,7 @@ mod tests {
             dry_run: false,
             execute: false,
             force: false,
+            user_intent: None,
         };
 
         let result = pipeline
@@ -837,6 +847,7 @@ mod tests {
             dry_run: false,
             execute: true,
             force: false,
+            user_intent: None,
         };
 
         let result = pipeline
@@ -2372,6 +2383,7 @@ mod tests {
             dry_run: true,
             execute: false,
             force: false,
+            user_intent: None,
         };
 
         let result = pipeline
@@ -2397,6 +2409,7 @@ mod tests {
             dry_run: false,
             execute: true,
             force: false,
+            user_intent: None,
         };
 
         let result = pipeline

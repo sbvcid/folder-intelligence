@@ -130,6 +130,7 @@ pub struct TaskAnalysis {
 #[derive(Default)]
 pub struct EvidenceAnalyzer {
     llm_classifier: Option<LlmClassifier>,
+    classifier_instruction: Option<String>,
 }
 
 const DOCUMENT_EXTS: &[&str] = &[
@@ -154,6 +155,11 @@ const CONFIG_EXTS: &[&str] = &["conf", "cfg", "ini", "env", "properties"];
 impl EvidenceAnalyzer {
     pub fn with_llm_classifier(mut self, classifier: LlmClassifier) -> Self {
         self.llm_classifier = Some(classifier);
+        self
+    }
+
+    pub fn with_classifier_instruction(mut self, instruction: Option<String>) -> Self {
+        self.classifier_instruction = instruction.filter(|s| !s.trim().is_empty());
         self
     }
 
@@ -204,6 +210,7 @@ impl EvidenceAnalyzer {
             &scope_evidence,
             &candidate_categories,
             scan_metadata.clone(),
+            self.classifier_instruction.as_deref(),
         )?;
         let anomalies = Self::detect_anomalies(&scope_evidence);
         let ambiguities = Self::detect_ambiguities(&scope_evidence, &classification_results);
@@ -370,13 +377,19 @@ impl EvidenceAnalyzer {
         scope_evidence: &DirectoryEvidence,
         candidates: &[CandidateCategory],
         scan_metadata: crate::evidence::ScanMetadata,
+        instruction: Option<&str>,
     ) -> Result<Vec<ClassificationResult>, AnalyzerError> {
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
 
         if let Some(ref classifier) = self.llm_classifier {
-            return self.run_llm_classification(scope_evidence, candidates, classifier);
+            return self.run_llm_classification(
+                scope_evidence,
+                candidates,
+                classifier,
+                instruction,
+            );
         }
 
         self.run_rule_based_classification(scope_evidence, candidates, scan_metadata)
@@ -429,6 +442,7 @@ impl EvidenceAnalyzer {
         scope_evidence: &DirectoryEvidence,
         candidates: &[CandidateCategory],
         classifier: &LlmClassifier,
+        instruction: Option<&str>,
     ) -> Result<Vec<ClassificationResult>, AnalyzerError> {
         let allowed_categories: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
         let allowed_category_paths: Vec<(String, PathBuf)> = candidates
@@ -436,7 +450,8 @@ impl EvidenceAnalyzer {
             .map(|c| (c.name.clone(), c.path.clone()))
             .collect();
 
-        let request = build_classification_request(scope_evidence, &allowed_categories);
+        let request =
+            build_classification_request(scope_evidence, &allowed_categories, instruction);
 
         let result = classifier
             .classify(&request, &scope_evidence.path, &allowed_category_paths)
