@@ -1025,7 +1025,21 @@ fn render_organize_preview(
 
     if !analysis.classification_results.is_empty() {
         output.push_str("\n  File-classification Explanations:\n");
+        let mut move_files: Vec<PathBuf> = Vec::new();
+        for op in &plan.operations {
+            if let crate::agent::FileSystemOperation::Move { source, dest: _ } = op {
+                move_files.push(source.clone());
+            }
+        }
+        move_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+        let mut explained_files: Vec<PathBuf> = Vec::new();
         for cr in &analysis.classification_results {
+            let dest = cr
+                .selected_candidate
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| cr.proposed_category_name.clone().unwrap_or_default());
             let decision_str = match cr.decision {
                 crate::classification::ClassificationDecision::MoveExisting => "Move to existing",
                 crate::classification::ClassificationDecision::CreateCategory => {
@@ -1036,36 +1050,53 @@ fn render_organize_preview(
                 }
                 crate::classification::ClassificationDecision::AskUser => "Requires user input",
             };
-            let dest = cr
-                .selected_candidate
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| cr.proposed_category_name.clone().unwrap_or_default());
-            output.push_str(&format!(
-                "    {} → {} | {} ({:.0}%)\n",
-                cr.target_path.display(),
-                dest,
-                decision_str,
-                cr.confidence * 100.0
-            ));
-            if let Some(reason) = &cr.classification_reason {
-                output.push_str(&format!("      Reason: {}\n", reason));
-            }
-            if !cr.supporting_evidence.is_empty() {
-                output.push_str("      Evidence:\n");
-                for ev in &cr.supporting_evidence {
-                    output.push_str(&format!(
-                        "        - {} ({})\n",
-                        ev.description, ev.evidence_type
-                    ));
+
+            let files_in_scope: Vec<&PathBuf> = move_files
+                .iter()
+                .filter(|f| {
+                    f.parent()
+                        .map(|p| p == cr.target_path || cr.target_path.starts_with(p))
+                        .unwrap_or(false)
+                        || f.starts_with(&cr.target_path)
+                })
+                .collect();
+
+            for file in files_in_scope {
+                explained_files.push(file.clone());
+                output.push_str(&format!(
+                    "    {} → {} | {} ({:.0}%)\n",
+                    file.display(),
+                    dest,
+                    decision_str,
+                    cr.confidence * 100.0
+                ));
+                if let Some(reason) = &cr.classification_reason {
+                    output.push_str(&format!("      Reason: {}\n", reason));
+                }
+                if !cr.supporting_evidence.is_empty() {
+                    output.push_str("      Evidence:\n");
+                    for ev in &cr.supporting_evidence {
+                        output.push_str(&format!(
+                            "        - {} ({})\n",
+                            ev.description, ev.evidence_type
+                        ));
+                    }
+                }
+                if !cr.warnings.is_empty() {
+                    output.push_str("      Warnings:\n");
+                    for w in &cr.warnings {
+                        output.push_str(&format!("        - {:?}\n", w));
+                    }
                 }
             }
-            if !cr.warnings.is_empty() {
-                output.push_str("      Warnings:\n");
-                for w in &cr.warnings {
-                    output.push_str(&format!("        - {:?}\n", w));
-                }
-            }
+        }
+
+        let unexplained: Vec<&PathBuf> = move_files
+            .iter()
+            .filter(|f| !explained_files.iter().any(|e| e == *f))
+            .collect();
+        for file in &unexplained {
+            output.push_str(&format!("    {}\n", file.display()));
         }
     }
 
@@ -1499,12 +1530,22 @@ mod tests {
             id: "explain-test".to_string(),
             recommendation_id: "rec-1".to_string(),
             scope: scope.clone(),
-            operations: vec![FileSystemOperation::Move {
-                source: scope.join("doc.pdf"),
-                dest: scope.join("Documents").join("doc.pdf"),
-            }],
+            operations: vec![
+                FileSystemOperation::Move {
+                    source: scope.join("doc.pdf"),
+                    dest: scope.join("Media").join("doc.pdf"),
+                },
+                FileSystemOperation::Move {
+                    source: scope.join("notes.txt"),
+                    dest: scope.join("Media").join("notes.txt"),
+                },
+                FileSystemOperation::Move {
+                    source: scope.join("vacation.jpg"),
+                    dest: scope.join("Media").join("vacation.jpg"),
+                },
+            ],
             estimated_impact: EstimatedImpact {
-                files_moved: 1,
+                files_moved: 3,
                 dirs_created: 0,
                 files_deleted: 0,
                 dirs_affected: 1,
@@ -1526,7 +1567,7 @@ mod tests {
             has_conflicts: false,
             has_invalid: false,
             has_warnings: false,
-            executable_operations: 1,
+            executable_operations: 3,
         };
 
         let recommendation = Recommendation {
@@ -1545,37 +1586,61 @@ mod tests {
 
         let mut analysis = minimal_analysis();
         analysis.classification_results = vec![ClassificationResult {
-            target_path: scope.join("doc.pdf"),
+            target_path: scope.clone(),
             decision: ClassificationDecision::MoveExisting,
-            selected_candidate: Some(scope.join("Documents")),
-            proposed_category_name: Some("Documents".to_string()),
+            selected_candidate: Some(scope.join("Media")),
+            proposed_category_name: Some("Media".to_string()),
             confidence: 0.95,
             confidence_band: crate::classification::ConfidenceBand::High,
             candidates_considered: 2,
             supporting_evidence: vec![crate::classification::SupportingEvidence {
                 evidence_type: "LLMClassification".to_string(),
-                description: "LLM classified as 'Documents'".to_string(),
+                description: "LLM classified as 'Media'".to_string(),
                 score: 0.95,
             }],
             alternatives: vec![],
             uncertainty: vec![],
-            classification_reason: Some("Filename and content indicate a document.".to_string()),
+            classification_reason: Some("Files classified as media content.".to_string()),
             warnings: vec![],
             classified_at: 0,
             schema_version: "3.0.0".to_string(),
-            provider: Some("gemini-3.5-flash".to_string()),
-            model: Some("openai-compatible".to_string()),
+            provider: Some("openai-compatible".to_string()),
+            model: Some("gemini-3.6-flash".to_string()),
         }];
 
         let preview = render_organize_preview(&plan, &validation, &recommendation, &analysis);
 
         assert!(preview.contains("File-classification Explanations:"));
         assert!(preview.contains("doc.pdf"));
-        assert!(preview.contains("Documents"));
+        assert!(preview.contains("notes.txt"));
+        assert!(preview.contains("vacation.jpg"));
+        assert!(preview.contains("Media"));
         assert!(preview.contains("Move to existing"));
-        assert!(preview.contains("Reason: Filename and content indicate a document."));
+        assert!(preview.contains("Reason: Files classified as media content."));
         assert!(preview.contains("Evidence:"));
-        assert!(preview.contains("LLM classified as 'Documents'"));
+        assert!(preview.contains("LLM classified as 'Media'"));
+
+        let doc_line = preview
+            .lines()
+            .find(|l| l.contains("doc.pdf") && l.contains("→"));
+        assert!(
+            doc_line.is_some(),
+            "should show doc.pdf with arrow and destination"
+        );
+        let notes_line = preview
+            .lines()
+            .find(|l| l.contains("notes.txt") && l.contains("→"));
+        assert!(
+            notes_line.is_some(),
+            "should show notes.txt with arrow and destination"
+        );
+        let jpg_line = preview
+            .lines()
+            .find(|l| l.contains("vacation.jpg") && l.contains("→"));
+        assert!(
+            jpg_line.is_some(),
+            "should show vacation.jpg with arrow and destination"
+        );
     }
 
     #[test]
