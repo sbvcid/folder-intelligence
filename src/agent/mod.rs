@@ -44,8 +44,9 @@ pub use policy::{Approval, Policy, PolicyDecision};
 #[allow(unused_imports)]
 pub use recommendation::{
     map_llm_strategy, ClarificationQuestion, ConstraintCheck, ConstraintViolation,
-    ProposedCategory, ProposedOperation, Recommendation, RecommendationEngine, RecommendationError,
-    RecommendationStrategy, RecommendationWarning, StrategyInfo,
+    OrganizationProposal, ProposedCategory, ProposedOperation, Recommendation,
+    RecommendationEngine, RecommendationError, RecommendationStrategy, RecommendationWarning,
+    StrategyInfo,
 };
 #[allow(unused_imports)]
 pub use validate::{

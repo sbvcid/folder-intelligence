@@ -46,6 +46,20 @@ pub struct ProposedCategory {
     pub confidence: f64,
     pub is_existing: bool,
     pub target_path: Option<PathBuf>,
+    #[serde(default)]
+    pub source_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct OrganizationProposal {
+    pub strategy: RecommendationStrategy,
+    pub rationale: String,
+    pub proposed_categories: Vec<ProposedCategory>,
+    #[serde(default)]
+    pub evidence_gaps: Vec<String>,
+    #[serde(default)]
+    pub ambiguities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -150,6 +164,8 @@ pub struct Recommendation {
     pub rationale: String,
     pub proposed_categories: Vec<ProposedCategory>,
     pub proposed_operations: Vec<ProposedOperation>,
+    #[serde(default)]
+    pub organization_proposal: Option<OrganizationProposal>,
     pub unresolved_questions: Vec<ClarificationQuestion>,
     pub confidence: f64,
     pub constraint_checks: Vec<ConstraintCheck>,
@@ -229,6 +245,14 @@ impl RecommendationEngine {
                 reason: s.reason.clone(),
             });
 
+        let organization_proposal = Some(OrganizationProposal {
+            strategy: strategy.clone(),
+            rationale: rationale.clone(),
+            proposed_categories: proposed_categories.clone(),
+            evidence_gaps: Vec::new(),
+            ambiguities: Vec::new(),
+        });
+
         Ok(Recommendation {
             id,
             strategy,
@@ -236,6 +260,7 @@ impl RecommendationEngine {
             rationale,
             proposed_categories,
             proposed_operations,
+            organization_proposal,
             unresolved_questions,
             confidence,
             constraint_checks,
@@ -342,6 +367,7 @@ impl RecommendationEngine {
                                 confidence: cr.confidence,
                                 is_existing: true,
                                 target_path: Some(selected.clone()),
+                                source_files: Vec::new(),
                             });
                         }
                     }
@@ -359,6 +385,7 @@ impl RecommendationEngine {
                             confidence: cr.confidence,
                             is_existing: false,
                             target_path: None,
+                            source_files: Vec::new(),
                         });
                     }
                 }

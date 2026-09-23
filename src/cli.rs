@@ -1544,6 +1544,7 @@ mod tests {
             constraint_checks: vec![],
             constraint_violation: None,
             warnings: vec![],
+            organization_proposal: None,
             generated_at: 0,
         };
 
@@ -1639,6 +1640,7 @@ mod tests {
             constraint_checks: vec![],
             constraint_violation: None,
             warnings: vec![],
+            organization_proposal: None,
             generated_at: 0,
         };
 
@@ -1802,6 +1804,7 @@ mod tests {
             constraint_checks: vec![],
             constraint_violation: None,
             warnings: vec![],
+            organization_proposal: None,
             generated_at: 0,
         };
 

@@ -70,6 +70,7 @@ fn test_clarification_complete_when_no_questions() {
         constraint_checks: Vec::new(),
         constraint_violation: None,
         warnings: Vec::new(),
+        organization_proposal: None,
         generated_at: 0,
     };
 
@@ -692,6 +693,7 @@ fn test_constraint_violation_displayed_in_summarize() {
             blocked_operations: vec!["Move 5 temp files to 'temp_files'".to_string()],
         }),
         warnings: Vec::new(),
+        organization_proposal: None,
         generated_at: 0,
     };
 

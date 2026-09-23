@@ -1,8 +1,8 @@
 use crate::agent::intent::TaskIntentParser;
 use crate::agent::{ConstraintSet, EvidenceAnalyzer, Goal, TaskIntent};
 use crate::agent::{
-    Pipeline, ProposedOperation, Recommendation, RecommendationEngine, RecommendationError,
-    RecommendationStrategy, RecommendationWarning,
+    OrganizationProposal, Pipeline, ProposedCategory, ProposedOperation, Recommendation,
+    RecommendationEngine, RecommendationError, RecommendationStrategy, RecommendationWarning,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -947,4 +947,74 @@ fn test_phase15_no_classification_result_no_fallback() {
         recommendation.proposed_operations.is_empty(),
         "No classification result must not trigger content-type fallback for operations"
     );
+}
+
+#[test]
+fn test_phase17c_organization_proposal_and_category() {
+    let source_file = PathBuf::from("test.txt");
+    let category = ProposedCategory {
+        name: "Documents".to_string(),
+        purpose: "Document files".to_string(),
+        target_content_types: vec!["pdf".to_string()],
+        confidence: 0.95,
+        is_existing: false,
+        target_path: Some(PathBuf::from("/docs")),
+        source_files: vec![source_file],
+    };
+    assert_eq!(category.name, "Documents");
+    assert_eq!(category.source_files.len(), 1);
+
+    let proposal = OrganizationProposal {
+        strategy: RecommendationStrategy::CategoryBased,
+        rationale: "Organize by document category".to_string(),
+        proposed_categories: vec![category],
+        evidence_gaps: vec!["missing author metadata".to_string()],
+        ambiguities: vec!["unclear file category".to_string()],
+    };
+    assert_eq!(proposal.proposed_categories.len(), 1);
+    assert_eq!(proposal.evidence_gaps.len(), 1);
+}
+
+#[test]
+fn test_phase17c_recommendation_contains_proposal() {
+    let dir = tempdir().unwrap();
+    let scope = create_test_scope(&dir);
+
+    let parser = TaskIntentParser::new(scope.clone());
+    let intent = parser.parse("Organize by category").expect("should parse");
+
+    let analyzer = EvidenceAnalyzer::default();
+    let analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    let engine = RecommendationEngine::default();
+    let recommendation = engine
+        .recommend(&intent, &analysis)
+        .expect("should recommend");
+
+    assert!(recommendation.organization_proposal.is_some());
+    let prop = recommendation.organization_proposal.as_ref().unwrap();
+    assert!(!prop.rationale.is_empty());
+}
+
+#[test]
+fn test_phase17c_old_recommendation_without_proposal_deserializes() {
+    let json = r#"{
+        "id": "rec-123",
+        "strategy": "category_based",
+        "strategy_info": null,
+        "rationale": "Test rationale",
+        "proposed_categories": [],
+        "proposed_operations": [],
+        "unresolved_questions": [],
+        "confidence": 0.9,
+        "constraint_checks": [],
+        "constraint_violation": null,
+        "warnings": [],
+        "generated_at": 1234567890
+    }"#;
+
+    let rec: Recommendation =
+        serde_json::from_str(json).expect("should deserialize old recommendation");
+    assert!(rec.organization_proposal.is_none());
+    assert_eq!(rec.id, "rec-123");
 }
