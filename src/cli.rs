@@ -1047,6 +1047,79 @@ fn render_recommendation_summary(
         }
     }
 
+    if let Some(ref proposal) = recommendation.organization_proposal {
+        output.push_str("\n");
+        output.push_str(&render_organization_proposal(proposal));
+    }
+
+    output
+}
+
+fn render_organization_proposal(proposal: &crate::agent::OrganizationProposal) -> String {
+    use crate::agent::RecommendationStrategy;
+
+    let mut output = String::new();
+    output.push_str("Organization Proposal\n");
+    output.push_str("---------------------\n");
+
+    let strategy_name = match proposal.strategy {
+        RecommendationStrategy::CategoryBased => "Category-based",
+        RecommendationStrategy::ProjectBased => "Project-based",
+        RecommendationStrategy::Chronological => "Chronological",
+        RecommendationStrategy::BySize => "By size",
+        RecommendationStrategy::ByAuthor => "By author",
+        RecommendationStrategy::ByTitle => "By title",
+        RecommendationStrategy::ByYear => "By year",
+        RecommendationStrategy::PreserveExisting => "Preserve existing",
+        RecommendationStrategy::Unknown => "Unknown",
+        RecommendationStrategy::Custom(ref s) => s,
+    };
+    output.push_str(&format!("Strategy: {}\n", strategy_name));
+
+    output.push_str("\nRationale:\n");
+    if proposal.rationale.is_empty() {
+        output.push_str("(none)\n");
+    } else {
+        output.push_str(&format!("{}\n", proposal.rationale));
+    }
+
+    output.push_str("\nCategories:\n");
+    if proposal.proposed_categories.is_empty() {
+        output.push_str("  (none)\n");
+    } else {
+        for cat in &proposal.proposed_categories {
+            output.push_str(&format!("  {}\n", cat.name));
+            output.push_str(&format!("    Purpose: {}\n", cat.purpose));
+            output.push_str("    Files:\n");
+            if cat.source_files.is_empty() {
+                output.push_str("      (none)\n");
+            } else {
+                for file in &cat.source_files {
+                    output.push_str(&format!("      - {}\n", file.display()));
+                }
+            }
+            output.push_str(&format!("    Confidence: {:.0}%\n", cat.confidence * 100.0));
+        }
+    }
+
+    output.push_str("\nEvidence gaps:\n");
+    if proposal.evidence_gaps.is_empty() {
+        output.push_str("  None\n");
+    } else {
+        for gap in &proposal.evidence_gaps {
+            output.push_str(&format!("  - {}\n", gap));
+        }
+    }
+
+    output.push_str("\nAmbiguities:\n");
+    if proposal.ambiguities.is_empty() {
+        output.push_str("  None\n");
+    } else {
+        for amb in &proposal.ambiguities {
+            output.push_str(&format!("  - {}\n", amb));
+        }
+    }
+
     output
 }
 
@@ -2066,6 +2139,155 @@ mod tests {
                 eprintln!("Pipeline error (may be pre-existing): {}", e);
             }
         }
+    }
+
+    fn make_test_proposal() -> crate::agent::OrganizationProposal {
+        use crate::agent::{OrganizationProposal, ProposedCategory, RecommendationStrategy};
+        use std::path::PathBuf;
+
+        OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "Group files by author while preserving existing directories.".to_string(),
+            proposed_categories: vec![
+                ProposedCategory {
+                    name: "Author A".to_string(),
+                    purpose: "Works by Author A".to_string(),
+                    target_content_types: vec![],
+                    confidence: 0.95,
+                    is_existing: false,
+                    target_path: Some(PathBuf::from("/scope/Author A")),
+                    source_files: vec![PathBuf::from("Manga1.cbz"), PathBuf::from("Manga2.cbz")],
+                },
+                ProposedCategory {
+                    name: "Author B".to_string(),
+                    purpose: "Works by Author B".to_string(),
+                    target_content_types: vec![],
+                    confidence: 0.90,
+                    is_existing: false,
+                    target_path: Some(PathBuf::from("/scope/Author B")),
+                    source_files: vec![PathBuf::from("Manga3.cbz")],
+                },
+            ],
+            evidence_gaps: vec!["Author metadata unavailable for 2 files".to_string()],
+            ambiguities: vec!["Some files may belong to multiple authors".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_renders_strategy() {
+        let proposal = make_test_proposal();
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Strategy: By author"));
+        assert!(rendered.contains("Organization Proposal"));
+        assert!(rendered.contains("---------------------"));
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_renders_rationale() {
+        let proposal = make_test_proposal();
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Rationale:"));
+        assert!(rendered.contains("Group files by author while preserving existing directories."));
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_renders_categories() {
+        let proposal = make_test_proposal();
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Categories:"));
+        assert!(rendered.contains("Author A"));
+        assert!(rendered.contains("Author B"));
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_renders_category_files() {
+        let proposal = make_test_proposal();
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Files:"));
+        assert!(rendered.contains("- Manga1.cbz"));
+        assert!(rendered.contains("- Manga3.cbz"));
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_renders_evidence_gaps() {
+        let proposal = make_test_proposal();
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Evidence gaps:"));
+        assert!(rendered.contains("Author metadata unavailable for 2 files"));
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_renders_ambiguities() {
+        let proposal = make_test_proposal();
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Ambiguities:"));
+        assert!(rendered.contains("Some files may belong to multiple authors"));
+    }
+
+    #[test]
+    fn test_phase17c3_proposal_empty_categories_renders_correctly() {
+        use crate::agent::{OrganizationProposal, RecommendationStrategy};
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::Unknown,
+            rationale: "Insufficient data".to_string(),
+            proposed_categories: vec![],
+            evidence_gaps: vec!["Author information is unavailable.".to_string()],
+            ambiguities: vec![],
+        };
+
+        let rendered = render_organization_proposal(&proposal);
+        assert!(rendered.contains("Categories:"));
+        assert!(rendered.contains("(none)"));
+        assert!(rendered.contains("Ambiguities:"));
+        assert!(rendered.contains("  None"));
+    }
+
+    #[test]
+    fn test_phase17c3_recommendation_without_proposal_is_backward_compatible() {
+        let recommendation = crate::agent::Recommendation {
+            id: "rec-1".to_string(),
+            strategy: crate::agent::RecommendationStrategy::CategoryBased,
+            strategy_info: None,
+            rationale: "test".to_string(),
+            proposed_categories: vec![],
+            proposed_operations: vec![],
+            organization_proposal: None,
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            generated_at: 0,
+        };
+
+        let rendered = render_recommendation_summary(&recommendation, &minimal_analysis());
+        assert!(!rendered.contains("Organization Proposal"));
+        assert!(rendered.contains("=== AI Organization Recommendation ==="));
+    }
+
+    #[test]
+    fn test_phase17c3_recommendation_with_proposal_is_rendered() {
+        let recommendation = crate::agent::Recommendation {
+            id: "rec-1".to_string(),
+            strategy: crate::agent::RecommendationStrategy::ByAuthor,
+            strategy_info: None,
+            rationale: "test".to_string(),
+            proposed_categories: vec![],
+            proposed_operations: vec![],
+            organization_proposal: Some(make_test_proposal()),
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            generated_at: 0,
+        };
+
+        let rendered = render_recommendation_summary(&recommendation, &minimal_analysis());
+        assert!(rendered.contains("Organization Proposal"));
+        assert!(rendered.contains("Strategy: By author"));
+        assert!(rendered.contains("Author A"));
     }
 }
 
