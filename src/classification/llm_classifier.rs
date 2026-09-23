@@ -1,3 +1,6 @@
+use crate::agent::recommendation::{
+    OrganizationProposal, ProposedCategory, RecommendationStrategy,
+};
 use crate::classification::result::{
     AlternativeCandidate, ClassificationDecision, ClassificationResult, ConfidenceBand,
     SupportingEvidence, UncertaintyReason,
@@ -46,23 +49,22 @@ impl LlmClassificationRequest {
             \n\
             Return a JSON object with:\n\
             1. organization_strategy: An entity with type (one of: by_author, by_title, by_type, by_year, preserve_existing, category_based, unknown), confidence (0.0-1.0), and optional reason.\n\
-            2. classifications: A JSON array where each entry classifies one file:\n\
+            2. organization_proposal: An entity with rationale (string), categories (array of objects with name, purpose, files array of relative file paths from observations, and confidence), evidence_gaps (array of strings), and ambiguities (array of strings).\n\
+            3. classifications: A JSON array where each entry classifies one file:\n\
             [{{\"path\": \"relative/path/file.pdf\", \"category\": \"Documents\", \"confidence\": 0.95, \"reason\": \"Filename indicates an invoice document.\"}}]\n\
             \n\
             Rules:\n\
-            1. You MUST only use category names from the ALLOWED list.\n\
-            2. You MUST NOT invent new categories.\n\
-            3. You MUST NOT invent files that were not provided in the observations.\n\
-            4. You MUST only return classifications for files you are confident about.\n\
-            5. If uncertain, OMIT the file from the response (do not classify it).\n\
-            6. Confidence must be a number between 0.0 and 1.0 (inclusive).\n\
-            7. Paths must be relative and must not escape the analyzed scope.\n\
-            8. You do NOT have filesystem execution authority. Your output is only used for classification decisions.\n\
-            9. If the user explicitly specifies an organization method (e.g. by author, by title), preserve that intent in the organization_strategy.\n\
-            10. Do NOT invent metadata (e.g. author names) that is not available in the filesystem evidence.\n\
-            11. If the requested strategy cannot be supported by available evidence, report the limitation instead of silently changing the strategy.\n\
+            1. You MUST only use category names from the ALLOWED list for file classifications.\n\
+            2. You MUST NOT invent files that were not provided in the observations.\n\
+            3. Confidence must be a number between 0.0 and 1.0 (inclusive).\n\
+            4. Paths must be relative and must not escape the analyzed scope.\n\
+            5. You do NOT have filesystem execution authority. Your output is only used for classification and proposal recommendations.\n\
+            6. If the user explicitly specifies an organization method (e.g. by author, by title), preserve that intent in organization_strategy and organization_proposal.\n\
+            7. Do NOT invent metadata (e.g. author names, years) that is not available in the filesystem evidence. If evidence is missing, do not hallucinate categories; instead, report the limitation in evidence_gaps.\n\
+            8. Proposal is a recommendation, not a filesystem operation. Do not output move/delete operations.\n\
+            9. If multiple reasonable groupings exist, record them in ambiguities.\n\
+            10. If data is insufficient for the requested proposal, leave categories empty and add explanation to evidence_gaps.\n\
             {instruction_section}\n\
-            Allowed categories:\n\
             {categories_json}\n\
             \n\
             Observations:\n\
@@ -120,9 +122,61 @@ impl Default for LlmStrategyInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmProposedCategory {
+    pub name: String,
+    pub purpose: String,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmOrganizationProposal {
+    #[serde(default)]
+    pub rationale: String,
+    #[serde(default)]
+    pub categories: Vec<LlmProposedCategory>,
+    #[serde(default)]
+    pub evidence_gaps: Vec<String>,
+    #[serde(default)]
+    pub ambiguities: Vec<String>,
+}
+
+pub fn map_llm_proposal(
+    llm_prop: &LlmOrganizationProposal,
+    strategy: RecommendationStrategy,
+    target_path: &Path,
+) -> OrganizationProposal {
+    let proposed_categories: Vec<ProposedCategory> = llm_prop
+        .categories
+        .iter()
+        .map(|cat| ProposedCategory {
+            name: cat.name.clone(),
+            purpose: cat.purpose.clone(),
+            target_content_types: Vec::new(),
+            confidence: cat.confidence,
+            is_existing: false,
+            target_path: Some(target_path.join(&cat.name)),
+            source_files: cat.files.iter().map(|f| target_path.join(f)).collect(),
+        })
+        .collect();
+
+    OrganizationProposal {
+        strategy,
+        rationale: llm_prop.rationale.clone(),
+        proposed_categories,
+        evidence_gaps: llm_prop.evidence_gaps.clone(),
+        ambiguities: llm_prop.ambiguities.clone(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LlmClassificationOutput {
     #[serde(default)]
     pub organization_strategy: Option<LlmStrategyInfo>,
+    #[serde(default)]
+    pub organization_proposal: Option<LlmOrganizationProposal>,
     #[serde(default)]
     pub classifications: Vec<LlmClassificationItem>,
 }
@@ -131,6 +185,7 @@ impl LlmClassificationOutput {
     pub fn from_classifications(items: Vec<LlmClassificationItem>) -> Self {
         LlmClassificationOutput {
             organization_strategy: None,
+            organization_proposal: None,
             classifications: items,
         }
     }
@@ -176,6 +231,7 @@ pub enum LlmClassificationError {
 pub struct ClassificationWithStrategy {
     pub classification: ClassificationResult,
     pub strategy: Option<LlmStrategyInfo>,
+    pub proposal: Option<OrganizationProposal>,
 }
 
 pub struct LlmClassifier {
@@ -225,9 +281,21 @@ impl LlmClassifier {
             request.observations.len(),
         );
 
+        let recommendation_strategy = output
+            .organization_strategy
+            .as_ref()
+            .map(|s| crate::agent::recommendation::map_llm_strategy(&s.strategy))
+            .unwrap_or(RecommendationStrategy::CategoryBased);
+
+        let proposal = output
+            .organization_proposal
+            .as_ref()
+            .map(|prop| map_llm_proposal(prop, recommendation_strategy, target_path));
+
         Ok(ClassificationWithStrategy {
             classification,
             strategy: output.organization_strategy,
+            proposal,
         })
     }
 }
@@ -1218,5 +1286,113 @@ mod tests {
         assert_eq!(result.unwrap().classification.confidence, 0.95);
 
         mock.assert();
+    }
+
+    #[test]
+    fn test_phase17c2_parse_valid_proposal() {
+        let json = r#"{
+            "organization_strategy": {
+                "type": "by_author",
+                "confidence": 0.95,
+                "reason": "By author requested"
+            },
+            "organization_proposal": {
+                "rationale": "Group by author",
+                "categories": [
+                    {"name": "Author A", "purpose": "Works by Author A", "files": ["file1.txt"], "confidence": 0.9},
+                    {"name": "Author B", "purpose": "Works by Author B", "files": ["file2.txt"], "confidence": 0.95}
+                ],
+                "evidence_gaps": [],
+                "ambiguities": []
+            },
+            "classifications": []
+        }"#;
+        let output: LlmClassificationOutput = serde_json::from_str(json).unwrap();
+        assert!(output.organization_proposal.is_some());
+        let prop = output.organization_proposal.unwrap();
+        assert_eq!(prop.categories.len(), 2);
+        assert_eq!(prop.categories[0].name, "Author A");
+    }
+
+    #[test]
+    fn test_phase17c2_parse_empty_categories() {
+        let json = r#"{
+            "organization_proposal": {
+                "rationale": "No categories",
+                "categories": [],
+                "evidence_gaps": ["Missing author info"],
+                "ambiguities": []
+            },
+            "classifications": []
+        }"#;
+        let output: LlmClassificationOutput = serde_json::from_str(json).unwrap();
+        assert!(output.organization_proposal.is_some());
+        assert!(output.organization_proposal.unwrap().categories.is_empty());
+    }
+
+    #[test]
+    fn test_phase17c2_parse_evidence_gaps() {
+        let json = r#"{
+            "organization_proposal": {
+                "rationale": "Gaps found",
+                "categories": [],
+                "evidence_gaps": ["Gap 1", "Gap 2"],
+                "ambiguities": []
+            },
+            "classifications": []
+        }"#;
+        let output: LlmClassificationOutput = serde_json::from_str(json).unwrap();
+        let prop = output.organization_proposal.unwrap();
+        assert_eq!(prop.evidence_gaps.len(), 2);
+        assert_eq!(prop.evidence_gaps[0], "Gap 1");
+    }
+
+    #[test]
+    fn test_phase17c2_parse_ambiguities() {
+        let json = r#"{
+            "organization_proposal": {
+                "rationale": "Ambiguities found",
+                "categories": [],
+                "evidence_gaps": [],
+                "ambiguities": ["Ambiguity 1"]
+            },
+            "classifications": []
+        }"#;
+        let output: LlmClassificationOutput = serde_json::from_str(json).unwrap();
+        let prop = output.organization_proposal.unwrap();
+        assert_eq!(prop.ambiguities.len(), 1);
+        assert_eq!(prop.ambiguities[0], "Ambiguity 1");
+    }
+
+    #[test]
+    fn test_phase17c2_old_json_backward_compatibility() {
+        let json = r#"{
+            "organization_strategy": {
+                "type": "category_based",
+                "confidence": 0.9
+            },
+            "classifications": []
+        }"#;
+        let output: LlmClassificationOutput = serde_json::from_str(json).unwrap();
+        assert!(output.organization_proposal.is_none());
+    }
+
+    #[test]
+    fn test_phase17c2_anti_hallucination_contract() {
+        let json = r#"{
+            "organization_proposal": {
+                "rationale": "Anti hallucination test",
+                "categories": [
+                    {"name": "Hallucinated Author", "purpose": "Test", "files": ["unknown.txt"], "confidence": 0.9}
+                ],
+                "evidence_gaps": ["Author information is unavailable."],
+                "ambiguities": []
+            },
+            "classifications": []
+        }"#;
+        let output: LlmClassificationOutput = serde_json::from_str(json).unwrap();
+        let prop = output.organization_proposal.unwrap();
+        assert!(!prop.evidence_gaps.is_empty());
+        assert_eq!(prop.evidence_gaps[0], "Author information is unavailable.");
     }
 }

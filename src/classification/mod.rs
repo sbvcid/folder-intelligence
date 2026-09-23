@@ -27,9 +27,10 @@ pub use input::{
 };
 #[allow(unused_imports)]
 pub use llm_classifier::{
-    build_classification_request, ClassificationWithStrategy, FileObservation,
+    build_classification_request, map_llm_proposal, ClassificationWithStrategy, FileObservation,
     LlmClassificationError, LlmClassificationItem, LlmClassificationOutput,
-    LlmClassificationRequest, LlmClassifier, LlmOrganizationStrategy, LlmStrategyInfo,
+    LlmClassificationRequest, LlmClassifier, LlmOrganizationProposal, LlmOrganizationStrategy,
+    LlmProposedCategory, LlmStrategyInfo,
 };
 #[allow(unused_imports)]
 pub use mock_ai::MockAiClassifier;

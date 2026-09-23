@@ -1361,6 +1361,7 @@ mod tests {
             candidate_categories: vec![],
             classification_results: vec![],
             organization_strategy: None,
+            organization_proposal: None,
             anomalies: vec![],
             ambiguities: vec![],
             evidence_gaps: vec![],

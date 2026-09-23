@@ -1,4 +1,5 @@
 use crate::agent::intent::{Goal, TaskIntent};
+use crate::agent::recommendation::OrganizationProposal;
 use crate::classification::{
     build_classification_request, ClassificationDecision, ClassificationInput,
     ClassificationProcessor, ClassificationResult, LlmClassifier, LlmStrategyInfo,
@@ -122,6 +123,7 @@ pub struct TaskAnalysis {
     pub candidate_categories: Vec<CandidateCategory>,
     pub classification_results: Vec<ClassificationResult>,
     pub organization_strategy: Option<LlmStrategyInfo>,
+    pub organization_proposal: Option<OrganizationProposal>,
     pub anomalies: Vec<Anomaly>,
     pub ambiguities: Vec<Ambiguity>,
     pub evidence_gaps: Vec<EvidenceGap>,
@@ -208,12 +210,13 @@ impl EvidenceAnalyzer {
         let content_groups = Self::group_content(&scope_evidence);
         let structure_summary = Self::build_structure_summary(&scope_evidence, &content_groups);
         let candidate_categories = Self::find_candidate_categories(scope, &scan_metadata);
-        let (classification_results, organization_strategy) = self.run_classification(
-            &scope_evidence,
-            &candidate_categories,
-            scan_metadata.clone(),
-            self.classifier_instruction.as_deref(),
-        )?;
+        let (classification_results, organization_strategy, organization_proposal) = self
+            .run_classification(
+                &scope_evidence,
+                &candidate_categories,
+                scan_metadata.clone(),
+                self.classifier_instruction.as_deref(),
+            )?;
         let anomalies = Self::detect_anomalies(&scope_evidence);
         let ambiguities = Self::detect_ambiguities(&scope_evidence, &classification_results);
         let evidence_gaps = self.identify_gaps(intent, &content_groups, &classification_results);
@@ -229,6 +232,7 @@ impl EvidenceAnalyzer {
             candidate_categories,
             classification_results,
             organization_strategy,
+            organization_proposal,
             anomalies,
             ambiguities,
             evidence_gaps,
@@ -381,20 +385,27 @@ impl EvidenceAnalyzer {
         candidates: &[CandidateCategory],
         scan_metadata: crate::evidence::ScanMetadata,
         instruction: Option<&str>,
-    ) -> Result<(Vec<ClassificationResult>, Option<LlmStrategyInfo>), AnalyzerError> {
+    ) -> Result<
+        (
+            Vec<ClassificationResult>,
+            Option<LlmStrategyInfo>,
+            Option<OrganizationProposal>,
+        ),
+        AnalyzerError,
+    > {
         if candidates.is_empty() && instruction.is_none() {
-            return Ok((Vec::new(), None));
+            return Ok((Vec::new(), None, None));
         }
 
         if let Some(ref classifier) = self.llm_classifier {
-            let (results, strategy) =
+            let (results, strategy, proposal) =
                 self.run_llm_classification(scope_evidence, candidates, classifier, instruction)?;
-            return Ok((results, strategy));
+            return Ok((results, strategy, proposal));
         }
 
         let results =
             self.run_rule_based_classification(scope_evidence, candidates, scan_metadata)?;
-        Ok((results, None))
+        Ok((results, None, None))
     }
 
     fn run_rule_based_classification(
@@ -445,7 +456,14 @@ impl EvidenceAnalyzer {
         candidates: &[CandidateCategory],
         classifier: &LlmClassifier,
         instruction: Option<&str>,
-    ) -> Result<(Vec<ClassificationResult>, Option<LlmStrategyInfo>), AnalyzerError> {
+    ) -> Result<
+        (
+            Vec<ClassificationResult>,
+            Option<LlmStrategyInfo>,
+            Option<OrganizationProposal>,
+        ),
+        AnalyzerError,
+    > {
         let allowed_categories: Vec<String> = candidates.iter().map(|c| c.name.clone()).collect();
         let allowed_category_paths: Vec<(String, PathBuf)> = candidates
             .iter()
@@ -459,7 +477,11 @@ impl EvidenceAnalyzer {
             .classify(&request, &scope_evidence.path, &allowed_category_paths)
             .map_err(|e| AnalyzerError::ClassificationFailed(e.to_string()))?;
 
-        Ok((vec![result.classification], result.strategy))
+        Ok((
+            vec![result.classification],
+            result.strategy,
+            result.proposal,
+        ))
     }
 
     fn detect_anomalies(evidence: &DirectoryEvidence) -> Vec<Anomaly> {
