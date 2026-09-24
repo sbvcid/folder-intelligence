@@ -982,7 +982,8 @@ fn do_organize(
     };
 
     // --- Refinement phase ---
-    if let Some(ref refine_text) = refine {
+    let (final_plan, final_validation, final_recommendation) = if let Some(ref refine_text) = refine
+    {
         let original_proposal = match result.recommendation.organization_proposal.as_ref() {
             Some(p) => p.clone(),
             None => {
@@ -1021,36 +1022,58 @@ fn do_organize(
             Ok(revised_proposal) => {
                 eprintln!("\nRefined Organization Proposal:");
                 eprintln!("{}", render_organization_proposal(&revised_proposal));
-                let json = serde_json::to_string_pretty(&revised_proposal)?;
-                write_output(&json, output)?;
-                return Ok(());
+
+                // Regenerate OperationPlan using ProposalConverter
+                let converter = crate::agent::ProposalConverter;
+                let mut refined_recommendation = result.recommendation.clone();
+                refined_recommendation.organization_proposal = Some(revised_proposal.clone());
+                refined_recommendation.proposed_categories =
+                    revised_proposal.proposed_categories.clone();
+
+                match converter.convert_to_plan(
+                    &revised_proposal,
+                    &refined_recommendation,
+                    &result.analysis,
+                    &scope,
+                ) {
+                    Ok(conversion_result) => {
+                        let mut refined_plan = conversion_result.operation_plan;
+                        refined_plan.dry_run = false;
+                        refined_plan.validation_context =
+                            Some(crate::agent::PlanValidationContext::default());
+
+                        let refined_validation = pipeline.validate(&refined_plan);
+                        (refined_plan, refined_validation, refined_recommendation)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Could not generate plan from refined proposal: {}. Keeping original.",
+                            e
+                        );
+                        (
+                            result.plan.clone(),
+                            result.validation.clone(),
+                            result.recommendation.clone(),
+                        )
+                    }
+                }
             }
             Err(e) => {
-                eprintln!("Refinement failed: {}", e);
-                let preview = render_organize_preview(
-                    &result.plan,
-                    &result.validation,
-                    &result.recommendation,
-                    &result.analysis,
-                );
-                eprintln!("{}", preview);
-                return finalize_organize(
-                    &pipeline,
-                    result.plan,
-                    result.validation,
-                    dry_run,
-                    yes,
-                    output,
-                );
+                eprintln!("Refinement failed: {}. Keeping original plan.", e);
+                (
+                    result.plan.clone(),
+                    result.validation.clone(),
+                    result.recommendation.clone(),
+                )
             }
         }
-    }
-
-    let (final_plan, final_validation, final_recommendation) = (
-        result.plan.clone(),
-        result.validation.clone(),
-        result.recommendation.clone(),
-    );
+    } else {
+        (
+            result.plan.clone(),
+            result.validation.clone(),
+            result.recommendation.clone(),
+        )
+    };
 
     // --- Preview & confirmation ---
 

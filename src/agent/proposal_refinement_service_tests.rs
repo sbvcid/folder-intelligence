@@ -201,4 +201,9 @@ fn test_service_revised_proposal_to_converter() {
         "Revised proposal should successfully convert to plan: {:?}",
         conversion.err()
     );
+
+    let plan = conversion.unwrap().operation_plan;
+    let validator = crate::agent::validate::PlanValidator::default();
+    let validation = validator.validate(&plan);
+    assert!(!validation.has_invalid, "Revised plan should be valid");
 }
