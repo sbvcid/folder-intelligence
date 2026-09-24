@@ -1435,4 +1435,253 @@ mod phase17c4_proposal_converter_tests {
         );
         assert!(!validation.has_conflicts);
     }
+
+    #[test]
+    fn test_11_conflicting_destination_on_filesystem_rejected() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "source data").unwrap();
+
+        // Create destination directory and pre-existing file with the same name
+        let author_dir = scope.join("Author A");
+        fs::create_dir_all(&author_dir).unwrap();
+        fs::write(author_dir.join("Manga1.cbz"), "existing data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: true,
+                target_path: Some(author_dir.clone()),
+                source_files: vec![scope.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, unresolved) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        assert!(
+            ops.is_empty(),
+            "Must not overwrite existing destination file"
+        );
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(
+            unresolved[0].reason,
+            UnresolvedReason::ConflictingDestination
+        );
+    }
+
+    #[test]
+    fn test_12_proposal_conversion_result_data_model() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: false,
+                target_path: None,
+                source_files: vec![scope.join("Manga1.cbz"), scope.join("Missing.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let recommendation = Recommendation {
+            id: "rec-test-12".to_string(),
+            strategy: RecommendationStrategy::ByAuthor,
+            strategy_info: None,
+            rationale: "test".to_string(),
+            proposed_categories: proposal.proposed_categories.clone(),
+            proposed_operations: vec![],
+            organization_proposal: Some(proposal.clone()),
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            generated_at: 0,
+        };
+
+        let converter = ProposalConverter;
+        let result = converter
+            .convert_to_plan(&proposal, &recommendation, &analysis, &scope)
+            .unwrap();
+
+        assert_eq!(result.operation_plan.operations.len(), 2); // CreateDir + Move
+        assert_eq!(result.unresolved.len(), 1);
+        assert_eq!(result.unresolved[0].reason, UnresolvedReason::MissingFile);
+        assert_eq!(result.operation_plan.estimated_impact.files_moved, 1);
+        assert_eq!(result.operation_plan.estimated_impact.dirs_created, 1);
+    }
+
+    #[test]
+    fn test_13_preview_renders_unresolved_items() {
+        use crate::agent::PlanPreview;
+
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+
+        let plan = OperationPlan {
+            id: "plan-test-13".to_string(),
+            recommendation_id: "rec-test-13".to_string(),
+            scope: scope.clone(),
+            operations: vec![],
+            estimated_impact: EstimatedImpact {
+                files_moved: 0,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 0,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            unresolved_proposals: vec![crate::agent::proposal_converter::UnresolvedItem {
+                file: scope.join("Missing.cbz"),
+                category: "Author A".to_string(),
+                reason: UnresolvedReason::MissingFile,
+            }],
+            dry_run: true,
+            created_at: 0,
+            validation_context: Some(PlanValidationContext::default()),
+        };
+
+        let validator = PlanValidator::default();
+        let validation = validator.validate(&plan);
+        let preview = PlanPreview.render(&plan, &validation);
+
+        assert!(preview.contains("Unresolved Proposal Items"));
+        assert!(preview.contains("Missing file"));
+        assert!(preview.contains("Author A"));
+    }
+
+    #[test]
+    fn test_14_real_e2e_instruction_to_proposal_to_plan_to_preview() {
+        use crate::classification::LlmClassifier;
+        use crate::llm::MockLlmProvider;
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("test-intent");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "content1").unwrap();
+        fs::write(scope.join("Manga2.cbz"), "content2").unwrap();
+        fs::write(scope.join("Manga3.cbz"), "content3").unwrap();
+
+        let mock_json = r#"{
+            "decision": "create_category",
+            "proposed_category_name": "Author A",
+            "confidence": 0.95,
+            "reasoning": "Organize manga by author",
+            "organization_strategy": {
+                "strategy": "by_author",
+                "confidence": 0.95,
+                "reason": "User requested organization by author"
+            },
+            "organization_proposal": {
+                "rationale": "Grouped into Author A and Author B based on series metadata",
+                "categories": [
+                    {
+                        "name": "Author A",
+                        "purpose": "Works by Author A",
+                        "files": ["Manga1.cbz", "Manga2.cbz"],
+                        "confidence": 0.95
+                    },
+                    {
+                        "name": "Author B",
+                        "purpose": "Works by Author B",
+                        "files": ["Manga3.cbz"],
+                        "confidence": 0.95
+                    }
+                ],
+                "evidence_gaps": [],
+                "ambiguities": []
+            }
+        }"#;
+
+        let mock_provider = MockLlmProvider::new(vec![mock_json.to_string()]);
+        let classifier = LlmClassifier::new(Arc::new(mock_provider));
+
+        let pipeline = Pipeline::new(&scope)
+            .with_llm_classifier(classifier)
+            .with_classifier_instruction(Some("按照作者整理".to_string()));
+
+        let intent = pipeline.parse_intent("Organize").unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+
+        // 1. Verify analysis captured the LLM organization proposal
+        assert!(analysis.organization_proposal.is_some());
+        let prop = analysis.organization_proposal.as_ref().unwrap();
+        assert_eq!(prop.proposed_categories.len(), 2);
+
+        // 2. Verify recommendation captured the organization proposal
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+        assert!(recommendation.organization_proposal.is_some());
+
+        // 3. Verify ProposalConverter generates OperationPlan
+        let plan = pipeline.plan(&recommendation, &analysis, &intent).unwrap();
+        assert_eq!(plan.operations.len(), 5); // CreateDir(A), Move(1), Move(2), CreateDir(B), Move(3)
+
+        // 4. Verify existing validation accepts the operations
+        let validation = pipeline.validate(&plan);
+        assert!(!validation.has_invalid);
+        assert!(!validation.has_conflicts);
+        assert_eq!(validation.executable_operations, 5);
+
+        // 5. Verify preview output displays the operations correctly
+        let preview = pipeline.preview(&plan, &validation);
+        assert!(preview.contains("Author A"));
+        assert!(preview.contains("Author B"));
+        assert!(preview.contains("Manga1.cbz"));
+        assert!(preview.contains("Manga2.cbz"));
+        assert!(preview.contains("Manga3.cbz"));
+        assert!(preview.contains("Files moved:  3"));
+        assert!(preview.contains("Dirs created: 2"));
+
+        // 6. Verify existing Executor executes the plan safely
+        let apply_result = pipeline
+            .apply(
+                &plan,
+                &validation,
+                &crate::agent::ApplyOptions {
+                    force: false,
+                    dry_run: false,
+                },
+            )
+            .unwrap();
+
+        assert!(apply_result.is_complete);
+        assert!(scope.join("Author A").join("Manga1.cbz").exists());
+        assert!(scope.join("Author A").join("Manga2.cbz").exists());
+        assert!(scope.join("Author B").join("Manga3.cbz").exists());
+        assert!(!scope.join("Manga1.cbz").exists());
+
+        // 7. Verify existing Verification passes
+        let verification = apply_result.execution_verification.unwrap();
+        assert!(verification.passed());
+    }
 }

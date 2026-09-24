@@ -1328,6 +1328,18 @@ fn render_organize_preview(
         ));
     }
 
+    if !plan.unresolved_proposals.is_empty() {
+        output.push_str("\nUnresolved proposal items:\n");
+        for item in &plan.unresolved_proposals {
+            output.push_str(&format!(
+                "  - {} (category: {}): {}\n",
+                item.file.display(),
+                item.category,
+                item.reason
+            ));
+        }
+    }
+
     output
 }
 

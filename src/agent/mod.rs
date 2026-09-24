@@ -43,7 +43,9 @@ pub use plan::{
 #[allow(unused_imports)]
 pub use policy::{Approval, Policy, PolicyDecision};
 #[allow(unused_imports)]
-pub use proposal_converter::{ProposalConverter, UnresolvedItem, UnresolvedReason};
+pub use proposal_converter::{
+    ProposalConversionResult, ProposalConverter, UnresolvedItem, UnresolvedReason,
+};
 #[allow(unused_imports)]
 pub use recommendation::{
     map_llm_strategy, ClarificationQuestion, ConstraintCheck, ConstraintViolation,

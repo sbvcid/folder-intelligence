@@ -245,13 +245,33 @@ impl RecommendationEngine {
                 reason: s.reason.clone(),
             });
 
-        let organization_proposal = Some(OrganizationProposal {
-            strategy: strategy.clone(),
-            rationale: rationale.clone(),
-            proposed_categories: proposed_categories.clone(),
-            evidence_gaps: Vec::new(),
-            ambiguities: Vec::new(),
+        let organization_proposal = analysis.organization_proposal.clone().or_else(|| {
+            Some(OrganizationProposal {
+                strategy: strategy.clone(),
+                rationale: rationale.clone(),
+                proposed_categories: proposed_categories.clone(),
+                evidence_gaps: Vec::new(),
+                ambiguities: Vec::new(),
+            })
         });
+
+        let (strategy, rationale, proposed_categories) =
+            if let Some(ref prop) = analysis.organization_proposal {
+                let strat = prop.strategy.clone();
+                let rat = if !prop.rationale.is_empty() {
+                    prop.rationale.clone()
+                } else {
+                    rationale
+                };
+                let cats = if !prop.proposed_categories.is_empty() {
+                    prop.proposed_categories.clone()
+                } else {
+                    proposed_categories
+                };
+                (strat, rat, cats)
+            } else {
+                (strategy, rationale, proposed_categories)
+            };
 
         Ok(Recommendation {
             id,

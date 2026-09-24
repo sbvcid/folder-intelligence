@@ -1,5 +1,4 @@
 use crate::agent::analysis::{ContentType, TaskAnalysis};
-use crate::agent::clarification::UserDecision;
 use crate::agent::intent::ConstraintSet;
 use crate::agent::proposal_converter::ProposalConverter;
 use crate::agent::recommendation::{ProposedOperation, Recommendation};
@@ -206,9 +205,10 @@ impl PlanGenerator {
         if use_proposal_converter {
             let proposal = recommendation.organization_proposal.as_ref().unwrap();
             let converter = ProposalConverter;
-            let (prop_ops, prop_unresolved) = converter.convert(proposal, analysis, &scope)?;
-            operations = prop_ops;
-            unresolved_proposals = prop_unresolved;
+            let result = converter.convert_to_plan(proposal, recommendation, analysis, &scope)?;
+            operations = result.operation_plan.operations;
+            unresolved_proposals = result.unresolved;
+            estimated = result.operation_plan.estimated_impact;
         } else {
             for op in &recommendation.proposed_operations {
                 match op {

@@ -480,6 +480,17 @@ impl PlanPreview {
 
         if plan.operations.is_empty() {
             output.push_str("No operations proposed.\n");
+            if !plan.unresolved_proposals.is_empty() {
+                output.push_str("\n=== Unresolved Proposal Items ===\n");
+                for item in &plan.unresolved_proposals {
+                    output.push_str(&format!(
+                        "  - {} (category: {}): {}\n",
+                        item.file.display(),
+                        item.category,
+                        item.reason
+                    ));
+                }
+            }
             return output;
         }
 
@@ -524,6 +535,18 @@ impl PlanPreview {
 
         if plan.has_conflicts {
             output.push_str("\n⚠️  Plan has detected conflicts\n");
+        }
+
+        if !plan.unresolved_proposals.is_empty() {
+            output.push_str("\n=== Unresolved Proposal Items ===\n");
+            for item in &plan.unresolved_proposals {
+                output.push_str(&format!(
+                    "  - {} (category: {}): {}\n",
+                    item.file.display(),
+                    item.category,
+                    item.reason
+                ));
+            }
         }
 
         output

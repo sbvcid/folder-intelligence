@@ -164,6 +164,19 @@ impl Pipeline {
         recommendation: &Recommendation,
         analysis: &TaskAnalysis,
     ) -> Result<(), PipelineError> {
+        let used_proposal = recommendation
+            .organization_proposal
+            .as_ref()
+            .map(|p| {
+                p.proposed_categories
+                    .iter()
+                    .any(|c| !c.source_files.is_empty())
+            })
+            .unwrap_or(false);
+        if used_proposal {
+            return Ok(());
+        }
+
         if let Some(classification) = analysis.classification_results.first() {
             match classification.decision {
                 crate::classification::ClassificationDecision::LeaveUnclassified => {
@@ -274,6 +287,19 @@ impl Pipeline {
         plan: &OperationPlan,
         recommendation: &Recommendation,
     ) -> Result<(), PipelineError> {
+        let used_proposal = recommendation
+            .organization_proposal
+            .as_ref()
+            .map(|p| {
+                p.proposed_categories
+                    .iter()
+                    .any(|c| !c.source_files.is_empty())
+            })
+            .unwrap_or(false);
+        if used_proposal {
+            return Ok(());
+        }
+
         // Check that every MoveCategory in recommendation has corresponding Move operations in plan
         for rec_op in &recommendation.proposed_operations {
             match rec_op {
