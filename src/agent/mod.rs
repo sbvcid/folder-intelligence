@@ -7,6 +7,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod policy;
 pub mod proposal_converter;
+pub mod proposal_refinement_parser;
 pub mod proposal_refiner;
 pub mod recommendation;
 pub mod validate;
@@ -46,6 +47,11 @@ pub use policy::{Approval, Policy, PolicyDecision};
 #[allow(unused_imports)]
 pub use proposal_converter::{
     ProposalConversionResult, ProposalConverter, UnresolvedItem, UnresolvedReason,
+};
+#[allow(unused_imports)]
+pub use proposal_refinement_parser::{
+    LlmRefinementOutput, LlmRefinementResponse, ProposalRefinementParser, RefinementParseError,
+    RefinementParseOutput,
 };
 #[allow(unused_imports)]
 pub use proposal_refiner::{ProposalRefinement, ProposalRefinementError, ProposalRefiner};

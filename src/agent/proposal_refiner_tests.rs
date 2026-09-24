@@ -1,8 +1,8 @@
 use super::*;
 use crate::agent::intent::TaskIntentParser;
-use crate::agent::validate::PlanValidator;
 use crate::agent::proposal_converter::ProposalConverter;
 use crate::agent::recommendation::{Recommendation, RecommendationStrategy};
+use crate::agent::validate::PlanValidator;
 use crate::agent::{EvidenceAnalyzer, PlanGenerator};
 use std::fs;
 use tempfile::tempdir;
