@@ -8,6 +8,7 @@ pub mod plan;
 pub mod policy;
 pub mod proposal_converter;
 pub mod proposal_refinement_parser;
+pub mod proposal_refinement_service;
 pub mod proposal_refiner;
 pub mod recommendation;
 pub mod validate;
@@ -53,6 +54,8 @@ pub use proposal_refinement_parser::{
     LlmRefinementOutput, LlmRefinementResponse, ProposalRefinementParser, RefinementParseError,
     RefinementParseOutput,
 };
+#[allow(unused_imports)]
+pub use proposal_refinement_service::{ProposalRefinementService, RefinementServiceError};
 #[allow(unused_imports)]
 pub use proposal_refiner::{ProposalRefinement, ProposalRefinementError, ProposalRefiner};
 #[allow(unused_imports)]

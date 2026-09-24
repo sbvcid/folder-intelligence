@@ -1,11 +1,15 @@
+use crate::agent::proposal_refinement_parser::{ProposalRefinementParser, RefinementParseError};
+use crate::agent::proposal_refiner::{ProposalRefinement, ProposalRefiner};
 use crate::agent::Pipeline;
 use crate::classification::AiClassifier;
 use crate::classification::ClassificationProcessor;
 use crate::evidence::{ScanLimits, ScanResult};
+use crate::llm::provider::LlmProvider;
 use crate::scanner::Scanner;
 use anyhow::{anyhow, Result};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct Cli {
     pub command: Commands,
@@ -90,6 +94,7 @@ pub enum Commands {
         dry_run: bool,
         output: Option<PathBuf>,
         instruction: Option<String>,
+        refine: Option<String>,
     },
     Chat {
         config: Option<PathBuf>,
@@ -121,6 +126,7 @@ impl Cli {
                     dry_run,
                     output,
                     instruction,
+                    refine: None,
                 }
             }
             Some(cmd) => match cmd.as_str() {
@@ -352,6 +358,7 @@ impl Cli {
                         Ok::<_, anyhow::Error>(PathBuf::from(s))
                     })?;
                     let instruction = args.opt_value_from_str("--instruction")?;
+                    let refine = args.opt_value_from_str("--refine")?;
                     let scope = args
                         .opt_free_from_os_str::<PathBuf, anyhow::Error>(|s| Ok(PathBuf::from(s)))?
                         .unwrap_or_else(|| {
@@ -365,6 +372,7 @@ impl Cli {
                         dry_run,
                         output,
                         instruction,
+                        refine,
                     }
                 }
                 "undo" => {
@@ -772,8 +780,9 @@ impl Cli {
                 dry_run,
                 output,
                 instruction,
+                refine,
             } => {
-                do_organize(scope, yes, dry_run, output, instruction)?;
+                do_organize(scope, yes, dry_run, output, instruction, refine)?;
             }
             Commands::Chat {
                 config,
@@ -849,12 +858,59 @@ fn build_llm_classifier(
     }
 }
 
+/// Outcome of a refinement attempt.
+#[derive(Debug, Clone)]
+pub struct RefinementOutcome {
+    pub applied: bool,
+    pub refinement: Option<ProposalRefinement>,
+    pub confidence: f64,
+    pub reason: Option<String>,
+}
+
+/// Parse a natural-language refinement request and apply it to the recommendation's
+/// OrganizationProposal. The original recommendation is mutated in place when a
+/// valid refinement is produced.
+pub fn refine_recommendation(
+    recommendation: &mut crate::agent::Recommendation,
+    refine_text: &str,
+    provider: Arc<dyn LlmProvider>,
+) -> Result<RefinementOutcome, RefinementParseError> {
+    let original_proposal = recommendation
+        .organization_proposal
+        .as_ref()
+        .ok_or(RefinementParseError::NoRefinement)?
+        .clone();
+
+    let parser = ProposalRefinementParser::new(provider);
+    let parse_output = parser.parse(refine_text, &original_proposal)?;
+
+    let refinement = parse_output
+        .refinement
+        .expect("parser returns Err when refinement is None");
+
+    let refiner = ProposalRefiner;
+    let refined_proposal = refiner
+        .refine(&original_proposal, &refinement)
+        .map_err(|e| RefinementParseError::RefinementError(e.to_string()))?;
+
+    recommendation.organization_proposal = Some(refined_proposal.clone());
+    recommendation.proposed_categories = refined_proposal.proposed_categories;
+
+    Ok(RefinementOutcome {
+        applied: true,
+        refinement: Some(refinement),
+        confidence: parse_output.confidence,
+        reason: parse_output.reason,
+    })
+}
+
 fn do_organize(
     scope: PathBuf,
     yes: bool,
     dry_run: bool,
     output: Option<PathBuf>,
     instruction: Option<String>,
+    refine: Option<String>,
 ) -> Result<()> {
     let mut pipeline = Pipeline::new(&scope);
 
@@ -925,27 +981,271 @@ fn do_organize(
         }
     };
 
-    if result.plan.operations.is_empty() {
+    // --- Refinement phase ---
+    // If --refine was supplied, apply one refinement to the proposal and regenerate the plan.
+    let (final_plan, final_validation, final_recommendation) = if let Some(ref refine_text) = refine
+    {
+        // Only proposals with an OrganizationProposal are refineable.
+        let original_proposal = match result.recommendation.organization_proposal.as_ref() {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("Warning: No OrganizationProposal available; skipping refinement.");
+                (
+                    result.plan.clone(),
+                    result.validation.clone(),
+                    result.recommendation.clone(),
+                )
+                    as (
+                        crate::agent::OperationPlan,
+                        crate::agent::validate::ValidationResult,
+                        crate::agent::recommendation::Recommendation,
+                    );
+                // fall through with original result
+                let preview = render_organize_preview(
+                    &result.plan,
+                    &result.validation,
+                    &result.recommendation,
+                    &result.analysis,
+                );
+                eprintln!("{}", preview);
+                return finalize_organize(
+                    &pipeline,
+                    result.plan,
+                    result.validation,
+                    dry_run,
+                    yes,
+                    output,
+                );
+            }
+        };
+
+        // Build a provider for the refinement parser.
+        // Use the configured LLM provider if available; fall back to the mock.
+        let refine_provider: Arc<dyn LlmProvider> = match build_refinement_provider() {
+            Ok(Some(p)) => p,
+            _ => {
+                eprintln!("Note: No LLM provider configured for refinement; using mock parser.");
+                Arc::new(crate::llm::MockLlmProvider::with_default_organize())
+            }
+        };
+
+        let parser = ProposalRefinementParser::new(refine_provider);
+        let refiner = ProposalRefiner;
+
+        eprintln!("Applying refinement...");
+
+        match parser.parse(refine_text, &original_proposal) {
+            Err(RefinementParseError::AmbiguousRefinement(reason)) => {
+                eprintln!("Unable to determine what you mean: {}", reason);
+                eprintln!("Please specify the category or file name more precisely.");
+                // Keep original plan
+                let preview = render_organize_preview(
+                    &result.plan,
+                    &result.validation,
+                    &result.recommendation,
+                    &result.analysis,
+                );
+                eprintln!("{}", preview);
+                return finalize_organize(
+                    &pipeline,
+                    result.plan,
+                    result.validation,
+                    dry_run,
+                    yes,
+                    output,
+                );
+            }
+            Err(RefinementParseError::NoRefinement) => {
+                eprintln!("No refinement applied (no change detected).");
+                // Keep original plan
+                let preview = render_organize_preview(
+                    &result.plan,
+                    &result.validation,
+                    &result.recommendation,
+                    &result.analysis,
+                );
+                eprintln!("{}", preview);
+                return finalize_organize(
+                    &pipeline,
+                    result.plan,
+                    result.validation,
+                    dry_run,
+                    yes,
+                    output,
+                );
+            }
+            Err(e) => {
+                eprintln!("Refinement parse error: {}. Keeping original proposal.", e);
+                let preview = render_organize_preview(
+                    &result.plan,
+                    &result.validation,
+                    &result.recommendation,
+                    &result.analysis,
+                );
+                eprintln!("{}", preview);
+                return finalize_organize(
+                    &pipeline,
+                    result.plan,
+                    result.validation,
+                    dry_run,
+                    yes,
+                    output,
+                );
+            }
+            Ok(parse_output) => {
+                let refinement = match parse_output.refinement {
+                    Some(r) => r,
+                    None => {
+                        eprintln!("No refinement applied.");
+                        let preview = render_organize_preview(
+                            &result.plan,
+                            &result.validation,
+                            &result.recommendation,
+                            &result.analysis,
+                        );
+                        eprintln!("{}", preview);
+                        return finalize_organize(
+                            &pipeline,
+                            result.plan,
+                            result.validation,
+                            dry_run,
+                            yes,
+                            output,
+                        );
+                    }
+                };
+
+                // Display a simple before/after summary of the refinement.
+                eprintln!("\nRefinement applied:");
+                print_refinement_summary(&refinement);
+
+                // Apply refinement to the proposal.
+                let refined_proposal = match refiner.refine(&original_proposal, &refinement) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Refinement error: {}. Keeping original proposal.", e);
+                        let preview = render_organize_preview(
+                            &result.plan,
+                            &result.validation,
+                            &result.recommendation,
+                            &result.analysis,
+                        );
+                        eprintln!("{}", preview);
+                        return finalize_organize(
+                            &pipeline,
+                            result.plan,
+                            result.validation,
+                            dry_run,
+                            yes,
+                            output,
+                        );
+                    }
+                };
+
+                // Regenerate OperationPlan from the refined OrganizationProposal via ProposalConverter.
+                let converter = crate::agent::ProposalConverter;
+                let mut refined_recommendation = result.recommendation.clone();
+                refined_recommendation.organization_proposal = Some(refined_proposal.clone());
+                refined_recommendation.proposed_categories =
+                    refined_proposal.proposed_categories.clone();
+
+                let conversion = converter.convert_to_plan(
+                    &refined_proposal,
+                    &refined_recommendation,
+                    &result.analysis,
+                    &scope,
+                );
+
+                match conversion {
+                    Err(e) => {
+                        eprintln!(
+                            "Could not generate plan from refined proposal: {}. Keeping original.",
+                            e
+                        );
+                        let preview = render_organize_preview(
+                            &result.plan,
+                            &result.validation,
+                            &result.recommendation,
+                            &result.analysis,
+                        );
+                        eprintln!("{}", preview);
+                        return finalize_organize(
+                            &pipeline,
+                            result.plan,
+                            result.validation,
+                            dry_run,
+                            yes,
+                            output,
+                        );
+                    }
+                    Ok(conversion_result) => {
+                        let mut refined_plan = conversion_result.operation_plan;
+                        refined_plan.dry_run = false;
+                        refined_plan.validation_context =
+                            Some(crate::agent::PlanValidationContext::default());
+
+                        let refined_validation = pipeline.validate(&refined_plan);
+
+                        eprintln!("\nUpdated proposal:");
+                        if let Some(ref p) = refined_recommendation.organization_proposal {
+                            eprintln!("{}", render_organization_proposal(p));
+                        }
+
+                        (refined_plan, refined_validation, refined_recommendation)
+                    }
+                }
+            }
+        }
+    } else {
+        (
+            result.plan.clone(),
+            result.validation.clone(),
+            result.recommendation.clone(),
+        )
+    };
+
+    // --- Preview & confirmation ---
+
+    if final_plan.operations.is_empty() {
         let recommendation_preview =
-            render_recommendation_summary(&result.recommendation, &result.analysis);
+            render_recommendation_summary(&final_recommendation, &result.analysis);
         eprintln!("{}", recommendation_preview);
         eprintln!("Nothing to organize. The folder is already organized.");
-        let json = serde_json::to_string_pretty(&result.plan)?;
+        let json = serde_json::to_string_pretty(&final_plan)?;
         write_output(&json, output)?;
         return Ok(());
     }
 
     let preview = render_organize_preview(
-        &result.plan,
-        &result.validation,
-        &result.recommendation,
+        &final_plan,
+        &final_validation,
+        &final_recommendation,
         &result.analysis,
     );
     eprintln!("{}", preview);
 
+    finalize_organize(
+        &pipeline,
+        final_plan,
+        final_validation,
+        dry_run,
+        yes,
+        output,
+    )
+}
+
+/// Shared confirmation + execution logic used after (optionally refined) plan is ready.
+fn finalize_organize(
+    pipeline: &Pipeline,
+    plan: crate::agent::OperationPlan,
+    validation: crate::agent::validate::ValidationResult,
+    dry_run: bool,
+    yes: bool,
+    output: Option<PathBuf>,
+) -> Result<()> {
     if dry_run {
         eprintln!("Dry run complete. No changes were made to the filesystem.");
-        let json = serde_json::to_string_pretty(&result.plan)?;
+        let json = serde_json::to_string_pretty(&plan)?;
         write_output(&json, output)?;
         return Ok(());
     }
@@ -960,8 +1260,8 @@ fn do_organize(
 
     eprintln!("Executing plan...");
     let apply_result = pipeline.apply(
-        &result.plan,
-        &result.validation,
+        &plan,
+        &validation,
         &crate::agent::ApplyOptions {
             force: false,
             dry_run: false,
@@ -975,6 +1275,51 @@ fn do_organize(
     let json = serde_json::to_string_pretty(&apply_result)?;
     write_output(&json, output)?;
     Ok(())
+}
+
+/// Print a concise human-readable summary of what the refinement changes.
+fn print_refinement_summary(refinement: &ProposalRefinement) {
+    match refinement {
+        ProposalRefinement::RenameCategory { from, to } => {
+            eprintln!("  Rename category:");
+            eprintln!("    {} → {}", from, to);
+        }
+        ProposalRefinement::RemoveCategory { name } => {
+            eprintln!("  Remove category:");
+            eprintln!("    {}", name);
+        }
+        ProposalRefinement::AddCategory { name, purpose } => {
+            eprintln!("  Add category:");
+            eprintln!("    {} ({})", name, purpose);
+        }
+        ProposalRefinement::MoveFileToCategory { file, category } => {
+            eprintln!("  Move file:");
+            eprintln!("    {} → {}", file.display(), category);
+        }
+    }
+}
+
+/// Build an LLM provider for use by the refinement parser.
+/// Reuses the same LlmConfig as the classifier when available.
+fn build_refinement_provider() -> Result<Option<Arc<dyn LlmProvider>>> {
+    let config = match crate::llm::LlmConfig::load() {
+        Ok(c) => c,
+        Err(_) => return Ok(None),
+    };
+
+    let is_llm_provider = config.provider == "ollama" || config.provider == "openai-compatible";
+    if !is_llm_provider {
+        return Ok(None);
+    }
+
+    match crate::llm::create_provider(&config) {
+        Ok(provider) => Ok(Some(provider)),
+        Err(e) => Err(anyhow!(
+            "LLM provider '{}' could not be initialized: {}",
+            config.provider,
+            e
+        )),
+    }
 }
 
 fn render_recommendation_summary(
@@ -1798,7 +2143,7 @@ mod tests {
         let scope = dir.path().join("downloads");
         std::fs::create_dir_all(&scope).unwrap();
 
-        let result = do_organize(scope, false, false, None, None);
+        let result = do_organize(scope, false, false, None, None, None);
 
         assert!(result.is_err(), "empty folder should produce an error");
         let err_msg = result.unwrap_err().to_string();
@@ -1818,7 +2163,7 @@ mod tests {
         let doc_content = b"pdf content";
         std::fs::write(scope.join("doc.pdf"), doc_content).unwrap();
 
-        let result = do_organize(scope.clone(), true, false, None, None);
+        let result = do_organize(scope.clone(), true, false, None, None, None);
 
         match &result {
             Ok(_) => {
@@ -1962,7 +2307,7 @@ mod tests {
         let scope = dir.path().join("not_a_dir");
         std::fs::write(&scope, "test").unwrap();
 
-        let result = do_organize(scope, false, false, None, None);
+        let result = do_organize(scope, false, false, None, None, None);
         assert!(result.is_err(), "non-directory scope should error");
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -2142,7 +2487,7 @@ mod tests {
         std::fs::write(&original_file, "test content").unwrap();
         std::fs::create_dir_all(scope.join("Documents")).unwrap();
 
-        let result = do_organize(scope.clone(), false, false, None, None);
+        let result = do_organize(scope.clone(), false, false, None, None, None);
 
         match &result {
             Ok(_) => {
