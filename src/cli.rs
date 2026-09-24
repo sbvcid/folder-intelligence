@@ -982,25 +982,11 @@ fn do_organize(
     };
 
     // --- Refinement phase ---
-    // If --refine was supplied, apply one refinement to the proposal and regenerate the plan.
-    let (final_plan, final_validation, final_recommendation) = if let Some(ref refine_text) = refine
-    {
-        // Only proposals with an OrganizationProposal are refineable.
+    if let Some(ref refine_text) = refine {
         let original_proposal = match result.recommendation.organization_proposal.as_ref() {
             Some(p) => p.clone(),
             None => {
                 eprintln!("Warning: No OrganizationProposal available; skipping refinement.");
-                (
-                    result.plan.clone(),
-                    result.validation.clone(),
-                    result.recommendation.clone(),
-                )
-                    as (
-                        crate::agent::OperationPlan,
-                        crate::agent::validate::ValidationResult,
-                        crate::agent::recommendation::Recommendation,
-                    );
-                // fall through with original result
                 let preview = render_organize_preview(
                     &result.plan,
                     &result.validation,
@@ -1019,8 +1005,6 @@ fn do_organize(
             }
         };
 
-        // Build a provider for the refinement parser.
-        // Use the configured LLM provider if available; fall back to the mock.
         let refine_provider: Arc<dyn LlmProvider> = match build_refinement_provider() {
             Ok(Some(p)) => p,
             _ => {
@@ -1029,53 +1013,20 @@ fn do_organize(
             }
         };
 
-        let parser = ProposalRefinementParser::new(refine_provider);
-        let refiner = ProposalRefiner;
+        let service = crate::agent::ProposalRefinementService::new(refine_provider);
 
         eprintln!("Applying refinement...");
 
-        match parser.parse(refine_text, &original_proposal) {
-            Err(RefinementParseError::AmbiguousRefinement(reason)) => {
-                eprintln!("Unable to determine what you mean: {}", reason);
-                eprintln!("Please specify the category or file name more precisely.");
-                // Keep original plan
-                let preview = render_organize_preview(
-                    &result.plan,
-                    &result.validation,
-                    &result.recommendation,
-                    &result.analysis,
-                );
-                eprintln!("{}", preview);
-                return finalize_organize(
-                    &pipeline,
-                    result.plan,
-                    result.validation,
-                    dry_run,
-                    yes,
-                    output,
-                );
-            }
-            Err(RefinementParseError::NoRefinement) => {
-                eprintln!("No refinement applied (no change detected).");
-                // Keep original plan
-                let preview = render_organize_preview(
-                    &result.plan,
-                    &result.validation,
-                    &result.recommendation,
-                    &result.analysis,
-                );
-                eprintln!("{}", preview);
-                return finalize_organize(
-                    &pipeline,
-                    result.plan,
-                    result.validation,
-                    dry_run,
-                    yes,
-                    output,
-                );
+        match service.refine(refine_text, &original_proposal) {
+            Ok(revised_proposal) => {
+                eprintln!("\nRefined Organization Proposal:");
+                eprintln!("{}", render_organization_proposal(&revised_proposal));
+                let json = serde_json::to_string_pretty(&revised_proposal)?;
+                write_output(&json, output)?;
+                return Ok(());
             }
             Err(e) => {
-                eprintln!("Refinement parse error: {}. Keeping original proposal.", e);
+                eprintln!("Refinement failed: {}", e);
                 let preview = render_organize_preview(
                     &result.plan,
                     &result.validation,
@@ -1092,117 +1043,14 @@ fn do_organize(
                     output,
                 );
             }
-            Ok(parse_output) => {
-                let refinement = match parse_output.refinement {
-                    Some(r) => r,
-                    None => {
-                        eprintln!("No refinement applied.");
-                        let preview = render_organize_preview(
-                            &result.plan,
-                            &result.validation,
-                            &result.recommendation,
-                            &result.analysis,
-                        );
-                        eprintln!("{}", preview);
-                        return finalize_organize(
-                            &pipeline,
-                            result.plan,
-                            result.validation,
-                            dry_run,
-                            yes,
-                            output,
-                        );
-                    }
-                };
-
-                // Display a simple before/after summary of the refinement.
-                eprintln!("\nRefinement applied:");
-                print_refinement_summary(&refinement);
-
-                // Apply refinement to the proposal.
-                let refined_proposal = match refiner.refine(&original_proposal, &refinement) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("Refinement error: {}. Keeping original proposal.", e);
-                        let preview = render_organize_preview(
-                            &result.plan,
-                            &result.validation,
-                            &result.recommendation,
-                            &result.analysis,
-                        );
-                        eprintln!("{}", preview);
-                        return finalize_organize(
-                            &pipeline,
-                            result.plan,
-                            result.validation,
-                            dry_run,
-                            yes,
-                            output,
-                        );
-                    }
-                };
-
-                // Regenerate OperationPlan from the refined OrganizationProposal via ProposalConverter.
-                let converter = crate::agent::ProposalConverter;
-                let mut refined_recommendation = result.recommendation.clone();
-                refined_recommendation.organization_proposal = Some(refined_proposal.clone());
-                refined_recommendation.proposed_categories =
-                    refined_proposal.proposed_categories.clone();
-
-                let conversion = converter.convert_to_plan(
-                    &refined_proposal,
-                    &refined_recommendation,
-                    &result.analysis,
-                    &scope,
-                );
-
-                match conversion {
-                    Err(e) => {
-                        eprintln!(
-                            "Could not generate plan from refined proposal: {}. Keeping original.",
-                            e
-                        );
-                        let preview = render_organize_preview(
-                            &result.plan,
-                            &result.validation,
-                            &result.recommendation,
-                            &result.analysis,
-                        );
-                        eprintln!("{}", preview);
-                        return finalize_organize(
-                            &pipeline,
-                            result.plan,
-                            result.validation,
-                            dry_run,
-                            yes,
-                            output,
-                        );
-                    }
-                    Ok(conversion_result) => {
-                        let mut refined_plan = conversion_result.operation_plan;
-                        refined_plan.dry_run = false;
-                        refined_plan.validation_context =
-                            Some(crate::agent::PlanValidationContext::default());
-
-                        let refined_validation = pipeline.validate(&refined_plan);
-
-                        eprintln!("\nUpdated proposal:");
-                        if let Some(ref p) = refined_recommendation.organization_proposal {
-                            eprintln!("{}", render_organization_proposal(p));
-                        }
-
-                        (refined_plan, refined_validation, refined_recommendation)
-                    }
-                }
-            }
         }
-    } else {
-        (
-            result.plan.clone(),
-            result.validation.clone(),
-            result.recommendation.clone(),
-        )
-    };
+    }
+
+    let (final_plan, final_validation, final_recommendation) = (
+        result.plan.clone(),
+        result.validation.clone(),
+        result.recommendation.clone(),
+    );
 
     // --- Preview & confirmation ---
 
@@ -2649,6 +2497,50 @@ mod tests {
         assert!(rendered.contains("Organization Proposal"));
         assert!(rendered.contains("Strategy: By author"));
         assert!(rendered.contains("Author A"));
+    }
+
+    #[test]
+    fn test_cli_refinement_service_success() {
+        let proposal = make_test_proposal();
+        let json_response = r#"{
+            "refinement": {
+                "type": "rename_category",
+                "from": "Author A",
+                "to": "作者A"
+            },
+            "confidence": 0.95,
+            "reason": "rename"
+        }"#;
+
+        let provider = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            json_response.to_string()
+        ]));
+        let service = crate::agent::ProposalRefinementService::new(provider);
+
+        let revised = service.refine("把 Author A 改成 作者A", &proposal).unwrap();
+        assert!(revised
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "作者A"));
+    }
+
+    #[test]
+    fn test_cli_refinement_service_failure_keeps_original() {
+        let proposal = make_test_proposal();
+        let json_response = r#"{
+            "refinement": null,
+            "confidence": 0.1,
+            "reason": "ambiguous"
+        }"#;
+
+        let provider = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            json_response.to_string()
+        ]));
+        let service = crate::agent::ProposalRefinementService::new(provider);
+
+        let res = service.refine("把那個改掉", &proposal);
+        assert!(res.is_err());
+        assert_eq!(proposal.proposed_categories[0].name, "Author A");
     }
 }
 
