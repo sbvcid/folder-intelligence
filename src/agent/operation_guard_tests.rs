@@ -356,6 +356,7 @@ fn test_execute_guarded_success() {
     fs::write(&source, "content").unwrap();
 
     let plan = crate::agent::plan::OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "guarded-exec-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -436,6 +437,7 @@ fn test_resume_execution_guarded_skips_already_applied() {
     fs::write(&source, "content").unwrap();
 
     let plan = crate::agent::plan::OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "guarded-resume-skip-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -484,6 +486,7 @@ fn test_resume_execution_guarded_executes_pending() {
     fs::write(&source, "content").unwrap();
 
     let plan = crate::agent::plan::OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "guarded-resume-pending-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -527,6 +530,7 @@ fn test_resume_execution_guarded_detects_external_change() {
     fs::write(&source, "content").unwrap();
 
     let plan = crate::agent::plan::OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "guarded-external-change-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -576,6 +580,7 @@ fn test_resume_execution_guarded_conflict_detected() {
     fs::write(&dest, "dest content").unwrap();
 
     let plan = crate::agent::plan::OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "guarded-conflict-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -683,6 +688,7 @@ fn test_resume_execution_guarded_partial_execution() {
     fs::write(&source2, "second").unwrap();
 
     let plan = crate::agent::plan::OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "guarded-partial-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),

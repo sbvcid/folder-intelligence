@@ -6,6 +6,7 @@ pub mod operation_guard;
 pub mod pipeline;
 pub mod plan;
 pub mod policy;
+pub mod proposal_converter;
 pub mod recommendation;
 pub mod validate;
 pub mod verification;
@@ -41,6 +42,8 @@ pub use plan::{
 };
 #[allow(unused_imports)]
 pub use policy::{Approval, Policy, PolicyDecision};
+#[allow(unused_imports)]
+pub use proposal_converter::{ProposalConverter, UnresolvedItem, UnresolvedReason};
 #[allow(unused_imports)]
 pub use recommendation::{
     map_llm_strategy, ClarificationQuestion, ConstraintCheck, ConstraintViolation,

@@ -1,6 +1,7 @@
 use crate::agent::analysis::{ContentType, TaskAnalysis};
 use crate::agent::clarification::UserDecision;
 use crate::agent::intent::ConstraintSet;
+use crate::agent::proposal_converter::ProposalConverter;
 use crate::agent::recommendation::{ProposedOperation, Recommendation};
 use crate::evidence::DirectoryEvidence;
 use serde::{Deserialize, Serialize};
@@ -121,6 +122,8 @@ pub struct OperationPlan {
     pub estimated_impact: EstimatedImpact,
     pub validation_warnings: Vec<ValidationWarning>,
     pub has_conflicts: bool,
+    #[serde(default)]
+    pub unresolved_proposals: Vec<crate::agent::proposal_converter::UnresolvedItem>,
     pub dry_run: bool,
     pub created_at: u64,
     #[serde(default)]
@@ -188,101 +191,116 @@ impl PlanGenerator {
         };
 
         let mut created_dirs: HashSet<PathBuf> = self.collect_existing_dirs(&scope, analysis);
+        let mut unresolved_proposals = Vec::new();
 
-        for op in &recommendation.proposed_operations {
-            match op {
-                ProposedOperation::CreateCategory { name, .. } => {
-                    let dest =
-                        self.resolve_category_dir(&scope, &analysis.candidate_categories, name);
-                    if !created_dirs.contains(&dest) && !dest.exists() {
-                        operations.push(FileSystemOperation::CreateDir { path: dest.clone() });
-                        estimated.dirs_created += 1;
-                        created_dirs.insert(dest.clone());
+        let use_proposal_converter = recommendation
+            .organization_proposal
+            .as_ref()
+            .map(|p| {
+                p.proposed_categories
+                    .iter()
+                    .any(|c| !c.source_files.is_empty())
+            })
+            .unwrap_or(false);
+
+        if use_proposal_converter {
+            let proposal = recommendation.organization_proposal.as_ref().unwrap();
+            let converter = ProposalConverter;
+            let (prop_ops, prop_unresolved) = converter.convert(proposal, analysis, &scope)?;
+            operations = prop_ops;
+            unresolved_proposals = prop_unresolved;
+        } else {
+            for op in &recommendation.proposed_operations {
+                match op {
+                    ProposedOperation::CreateCategory { name, .. } => {
+                        let dest =
+                            self.resolve_category_dir(&scope, &analysis.candidate_categories, name);
+                        if !created_dirs.contains(&dest) && !dest.exists() {
+                            operations.push(FileSystemOperation::CreateDir { path: dest.clone() });
+                            estimated.dirs_created += 1;
+                            created_dirs.insert(dest.clone());
+                        }
                     }
-                }
-                ProposedOperation::MoveCategory {
-                    to_category,
-                    content_type,
-                    file_count,
-                    ..
-                } => {
-                    let dest = self.resolve_category_dir(
-                        &scope,
-                        &analysis.candidate_categories,
+                    ProposedOperation::MoveCategory {
                         to_category,
-                    );
-                    if !created_dirs.contains(&dest) && !dest.exists() {
-                        operations.push(FileSystemOperation::CreateDir { path: dest.clone() });
-                        estimated.dirs_created += 1;
-                        created_dirs.insert(dest.clone());
+                        content_type,
+                        file_count,
+                        ..
+                    } => {
+                        let dest = self.resolve_category_dir(
+                            &scope,
+                            &analysis.candidate_categories,
+                            to_category,
+                        );
+                        if !created_dirs.contains(&dest) && !dest.exists() {
+                            operations.push(FileSystemOperation::CreateDir { path: dest.clone() });
+                            estimated.dirs_created += 1;
+                            created_dirs.insert(dest.clone());
+                        }
+
+                        let ct = self.parse_content_type(content_type);
+                        let moved = self.resolve_file_moves(
+                            &scope,
+                            &analysis.scope_evidence,
+                            &ct,
+                            *file_count,
+                            &mut warnings,
+                        );
+
+                        for (source, _) in &moved {
+                            if source == &dest {
+                                return Err(PlanError::SourceEqualsDestination {
+                                    source: source.clone(),
+                                    dest: dest.clone(),
+                                });
+                            }
+                        }
+
+                        let moved_len = moved.len();
+
+                        operations.extend(moved.into_iter().map(|(source, _size)| {
+                            let file_name =
+                                source.file_name().map(PathBuf::from).unwrap_or_default();
+                            FileSystemOperation::Move {
+                                source,
+                                dest: dest.join(file_name),
+                            }
+                        }));
+
+                        estimated.files_moved += moved_len as u64;
                     }
-
-                    let ct = self.parse_content_type(content_type);
-                    let moved = self.resolve_file_moves(
-                        &scope,
-                        &analysis.scope_evidence,
-                        &ct,
-                        *file_count,
-                        &mut warnings,
-                    );
-
-                    for (source, _) in &moved {
-                        if source == &dest {
-                            return Err(PlanError::SourceEqualsDestination {
-                                source: source.clone(),
-                                dest: dest.clone(),
+                    ProposedOperation::PreserveDirectory { path } => {
+                        created_dirs.insert(path.clone());
+                    }
+                    ProposedOperation::ArchiveFiles {
+                        category,
+                        file_count: _,
+                    } => {
+                        let archive_dir = scope.join("archive");
+                        if !created_dirs.contains(&archive_dir) && !archive_dir.exists() {
+                            operations.push(FileSystemOperation::CreateDir {
+                                path: archive_dir.clone(),
                             });
+                            estimated.dirs_created += 1;
+                            created_dirs.insert(archive_dir.clone());
                         }
-                    }
 
-                    let moved_len = moved.len();
-
-                    operations.extend(moved.into_iter().map(|(source, _size)| {
-                        let file_name = source.file_name().map(PathBuf::from).unwrap_or_default();
-                        FileSystemOperation::Move {
-                            source,
-                            dest: dest.join(file_name),
+                        let archive_pattern = category;
+                        let archive_dest = scope.join("archive").join(archive_pattern);
+                        if !archive_dest.exists() {
+                            operations.push(FileSystemOperation::CreateDir {
+                                path: archive_dest.clone(),
+                            });
+                            estimated.dirs_created += 1;
+                            created_dirs.insert(archive_dest.clone());
                         }
-                    }));
 
-                    estimated.files_moved += moved_len as u64;
-                }
-                ProposedOperation::PreserveDirectory { path } => {
-                    created_dirs.insert(path.clone());
-                }
-                ProposedOperation::ArchiveFiles {
-                    category,
-                    file_count: _,
-                } => {
-                    let archive_dir = scope.join("archive");
-                    if !created_dirs.contains(&archive_dir) && !archive_dir.exists() {
-                        operations.push(FileSystemOperation::CreateDir {
-                            path: archive_dir.clone(),
+                        operations.push(FileSystemOperation::Move {
+                            source: scope.join(category),
+                            dest: archive_dest,
                         });
-                        estimated.dirs_created += 1;
-                        created_dirs.insert(archive_dir.clone());
                     }
-
-                    let archive_pattern = category;
-                    let archive_dest = scope.join("archive").join(archive_pattern);
-                    if !archive_dest.exists() {
-                        operations.push(FileSystemOperation::CreateDir {
-                            path: archive_dest.clone(),
-                        });
-                        estimated.dirs_created += 1;
-                        created_dirs.insert(archive_dest.clone());
-                    }
-
-                    operations.push(FileSystemOperation::Move {
-                        source: scope.join(category),
-                        dest: archive_dest,
-                    });
-                }
-                ProposedOperation::LeaveUnclassified {
-                    file_count: _,
-                    reason: _,
-                } => {
-                    // No operations for files left unclassified
+                    ProposedOperation::LeaveUnclassified { .. } => {}
                 }
             }
         }
@@ -316,9 +334,10 @@ impl PlanGenerator {
             estimated_impact: estimated,
             validation_warnings: warnings,
             has_conflicts,
+            unresolved_proposals,
             dry_run: true,
             created_at,
-            validation_context: None,
+            validation_context: Some(PlanValidationContext::default()),
         })
     }
 
@@ -476,18 +495,7 @@ impl PlanGenerator {
     }
 
     fn is_within_scope(path: &Path, scope: &Path) -> bool {
-        if path == scope {
-            return true;
-        }
-
-        let path_components: Vec<_> = path.components().collect();
-        let scope_components: Vec<_> = scope.components().collect();
-
-        if path_components.len() <= scope_components.len() {
-            return false;
-        }
-
-        path_components.starts_with(&scope_components[..])
+        path.starts_with(scope)
     }
 
     #[allow(dead_code)]
@@ -503,6 +511,17 @@ impl PlanGenerator {
 
         if plan.operations.is_empty() {
             preview.push_str("No operations proposed.\n");
+            if !plan.unresolved_proposals.is_empty() {
+                preview.push_str("\n=== Unresolved Proposals ===\n");
+                for item in &plan.unresolved_proposals {
+                    preview.push_str(&format!(
+                        "  ⚠️  {}: {:?} ({})\n",
+                        item.file.display(),
+                        item.reason,
+                        item.category
+                    ));
+                }
+            }
             return preview;
         }
 
@@ -527,6 +546,18 @@ impl PlanGenerator {
         for op in &plan.operations {
             if let FileSystemOperation::Delete { path, reason } = op {
                 preview.push_str(&format!("  × {} ({})\n", path.display(), reason));
+            }
+        }
+
+        if !plan.unresolved_proposals.is_empty() {
+            preview.push_str("\n=== Unresolved Proposals ===\n");
+            for item in &plan.unresolved_proposals {
+                preview.push_str(&format!(
+                    "  ⚠️  {}: {:?} ({})\n",
+                    item.file.display(),
+                    item.reason,
+                    item.category
+                ));
             }
         }
 

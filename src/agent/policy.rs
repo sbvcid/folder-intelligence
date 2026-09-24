@@ -141,6 +141,7 @@ mod tests {
 
     fn make_valid_plan() -> OperationPlan {
         OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "test-plan".to_string(),
             recommendation_id: "rec".to_string(),
             scope: PathBuf::from("/tmp/scope"),

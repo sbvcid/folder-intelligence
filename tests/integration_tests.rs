@@ -761,6 +761,7 @@ fn create_approval_scope(dir: &tempfile::TempDir) -> (PathBuf, OperationPlan, Va
     std::fs::create_dir_all(scope.join("Documents")).unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "approval-test-plan".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: scope.clone(),
@@ -1154,6 +1155,7 @@ fn test_loaded_plan_invalid_plan_rejected() {
     // Deliberately do NOT create readme.txt — source won't exist
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "invalid-plan".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: scope.clone(),
@@ -1201,6 +1203,7 @@ fn test_loaded_plan_conflicting_plan_rejected() {
     std::fs::write(scope.join("file2.txt"), "b").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "conflict-plan".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: scope.clone(),

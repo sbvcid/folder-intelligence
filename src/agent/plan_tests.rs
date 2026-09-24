@@ -468,6 +468,7 @@ fn test_plan_does_not_have_duplicate_destinations() {
 #[test]
 fn test_plan_preview_no_operations() {
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-plan".to_string(),
         recommendation_id: "test-rec".to_string(),
         scope: PathBuf::from("/tmp"),
@@ -519,6 +520,7 @@ fn test_plan_with_archive_operation() {
 #[test]
 fn test_plan_scope_validation() {
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-plan".to_string(),
         recommendation_id: "test-rec".to_string(),
         scope: PathBuf::from("/tmp/scope"),
@@ -997,6 +999,7 @@ fn test_move_source_equals_dest_rejected_by_validator() {
     fs::write(&file, "content").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-move-same".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
@@ -1022,4 +1025,414 @@ fn test_move_source_equals_dest_rejected_by_validator() {
     let result = validator.validate(&plan);
 
     assert!(result.has_invalid, "source == dest must be INVALID");
+}
+
+#[cfg(test)]
+mod phase17c4_proposal_converter_tests {
+    use super::*;
+    use crate::agent::proposal_converter::{ProposalConverter, UnresolvedReason};
+    use crate::agent::recommendation::{
+        OrganizationProposal, ProposedCategory, RecommendationStrategy,
+    };
+    use crate::agent::EvidenceAnalyzer;
+
+    #[test]
+    fn test_1_proposal_category_converts_to_move_operations() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analyzer = EvidenceAnalyzer::default();
+        let analysis = analyzer.analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "Author A works".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: false,
+                target_path: None,
+                source_files: vec![scope.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, unresolved) = converter.convert(&proposal, &analysis, &scope).unwrap();
+
+        assert_eq!(ops.len(), 2); // CreateDir + Move
+        assert!(unresolved.is_empty());
+    }
+
+    #[test]
+    fn test_2_multiple_categories_create_separate_destinations() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+        fs::write(scope.join("Manga2.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![
+                ProposedCategory {
+                    name: "Author A".to_string(),
+                    purpose: "A".to_string(),
+                    target_content_types: vec![],
+                    confidence: 0.9,
+                    is_existing: false,
+                    target_path: None,
+                    source_files: vec![scope.join("Manga1.cbz")],
+                },
+                ProposedCategory {
+                    name: "Author B".to_string(),
+                    purpose: "B".to_string(),
+                    target_content_types: vec![],
+                    confidence: 0.9,
+                    is_existing: false,
+                    target_path: None,
+                    source_files: vec![scope.join("Manga2.cbz")],
+                },
+            ],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, _) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        // CreateDir Author A, Move Manga1, CreateDir Author B, Move Manga2 = 4 ops
+        assert_eq!(ops.len(), 4);
+    }
+
+    #[test]
+    fn test_3_existing_destination_directory_is_reused() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::create_dir_all(scope.join("Author A")).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: true,
+                target_path: Some(scope.join("Author A")),
+                source_files: vec![scope.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, _) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        // Since Author A exists, no CreateDir should be generated, only Move = 1 op
+        assert_eq!(ops.len(), 1);
+        if let FileSystemOperation::Move { dest, .. } = &ops[0] {
+            assert!(dest.starts_with(scope.join("Author A")));
+        } else {
+            panic!("Expected Move operation");
+        }
+    }
+
+    #[test]
+    fn test_4_already_organized_file_is_not_moved() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        let author_dir = scope.join("Author A");
+        fs::create_dir_all(&author_dir).unwrap();
+        // File is already inside Author A/
+        fs::write(author_dir.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: true,
+                target_path: Some(author_dir.clone()),
+                source_files: vec![author_dir.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, unresolved) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        assert!(ops.is_empty());
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].reason, UnresolvedReason::AlreadyOrganized);
+    }
+
+    #[test]
+    fn test_5_missing_proposal_file_produces_no_operation() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: false,
+                target_path: None,
+                source_files: vec![scope.join("Missing.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, unresolved) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        assert!(ops.is_empty());
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].reason, UnresolvedReason::MissingFile);
+    }
+
+    #[test]
+    fn test_6_ambiguous_file_produces_no_operation() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Shared.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![
+                ProposedCategory {
+                    name: "Author A".to_string(),
+                    purpose: "A".to_string(),
+                    target_content_types: vec![],
+                    confidence: 0.9,
+                    is_existing: false,
+                    target_path: None,
+                    source_files: vec![scope.join("Shared.cbz")],
+                },
+                ProposedCategory {
+                    name: "Author B".to_string(),
+                    purpose: "B".to_string(),
+                    target_content_types: vec![],
+                    confidence: 0.9,
+                    is_existing: false,
+                    target_path: None,
+                    source_files: vec![scope.join("Shared.cbz")],
+                },
+            ],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, unresolved) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        // File claimed by both -> ambiguous for both or second
+        assert!(ops.is_empty());
+        assert!(!unresolved.is_empty());
+        assert!(unresolved
+            .iter()
+            .any(|u| u.reason == UnresolvedReason::Ambiguous));
+    }
+
+    #[test]
+    fn test_7_duplicate_proposal_entries_do_not_create_duplicate_operations() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: false,
+                target_path: None,
+                source_files: vec![scope.join("Manga1.cbz"), scope.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (ops, _) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        // Same file twice in same category should be treated as same claim or invalid destination / handled gracefully
+        let move_count = ops
+            .iter()
+            .filter(|o| matches!(o, FileSystemOperation::Move { .. }))
+            .count();
+        assert_eq!(move_count, 1);
+    }
+
+    #[test]
+    fn test_8_unsafe_destination_is_rejected() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "../Outside".to_string(),
+                purpose: "Outside scope".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: false,
+                target_path: None,
+                source_files: vec![scope.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let converter = ProposalConverter;
+        let (_, unresolved) = converter.convert(&proposal, &analysis, &scope).unwrap();
+        assert!(!unresolved.is_empty());
+        assert_eq!(
+            unresolved[0].reason,
+            UnresolvedReason::DestinationOutsideScope
+        );
+    }
+
+    #[test]
+    fn test_9_proposal_absent_preserves_existing_operation_plan_behavior() {
+        let dir = tempdir().unwrap();
+        let scope = create_test_scope(&dir);
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize files by type")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+        let recommendation = RecommendationEngine::default()
+            .recommend(&intent, &analysis)
+            .unwrap();
+
+        // Ensure recommendation has no proposal or proposal has empty source files
+        let mut rec_no_prop = recommendation.clone();
+        rec_no_prop.organization_proposal = None;
+
+        let generator = PlanGenerator;
+        let plan = generator.generate(&rec_no_prop, &analysis).unwrap();
+        // Should generate operations via existing proposed_operations logic
+        assert!(!plan.operations.is_empty());
+    }
+
+    #[test]
+    fn test_10_generated_operations_still_pass_existing_validation() {
+        let dir = tempdir().unwrap();
+        let scope = dir.path().join("scope");
+        fs::create_dir_all(&scope).unwrap();
+        fs::write(scope.join("Manga1.cbz"), "data").unwrap();
+
+        let intent = TaskIntentParser::new(scope.clone())
+            .parse("Organize")
+            .unwrap();
+        let analysis = EvidenceAnalyzer::default().analyze(&intent).unwrap();
+
+        let proposal = OrganizationProposal {
+            strategy: RecommendationStrategy::ByAuthor,
+            rationale: "test".to_string(),
+            proposed_categories: vec![ProposedCategory {
+                name: "Author A".to_string(),
+                purpose: "A".to_string(),
+                target_content_types: vec![],
+                confidence: 0.9,
+                is_existing: false,
+                target_path: None,
+                source_files: vec![scope.join("Manga1.cbz")],
+            }],
+            evidence_gaps: vec![],
+            ambiguities: vec![],
+        };
+
+        let recommendation = Recommendation {
+            id: "rec-1".to_string(),
+            strategy: RecommendationStrategy::ByAuthor,
+            strategy_info: None,
+            rationale: "test".to_string(),
+            proposed_categories: proposal.proposed_categories.clone(),
+            proposed_operations: vec![],
+            organization_proposal: Some(proposal),
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            generated_at: 0,
+        };
+
+        let generator = PlanGenerator;
+        let plan = generator.generate(&recommendation, &analysis).unwrap();
+
+        let validator = PlanValidator::default();
+        let validation = validator.validate(&plan);
+        if validation.has_invalid {
+            println!("VALIDATION FAILED: {:?}", validation);
+        }
+        assert!(
+            !validation.has_invalid,
+            "Generated operations must be valid"
+        );
+        assert!(!validation.has_conflicts);
+    }
 }

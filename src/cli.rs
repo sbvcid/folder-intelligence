@@ -1342,6 +1342,7 @@ mod tests {
 
     fn make_test_plan(scope: &Path) -> crate::agent::OperationPlan {
         crate::agent::OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "test-plan".to_string(),
             recommendation_id: "rec-1".to_string(),
             scope: scope.to_path_buf(),
@@ -1554,6 +1555,7 @@ mod tests {
 
         let scope = PathBuf::from("/test/scope");
         let plan = crate::agent::OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "org-test".to_string(),
             recommendation_id: "rec-1".to_string(),
             scope: scope.clone(),
@@ -1659,6 +1661,7 @@ mod tests {
 
         let scope = PathBuf::from("/test/scope");
         let plan = crate::agent::OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "explain-test".to_string(),
             recommendation_id: "rec-1".to_string(),
             scope: scope.clone(),
@@ -1827,6 +1830,7 @@ mod tests {
 
         let scope = PathBuf::from("/test/scope");
         let plan = crate::agent::OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "sort-test".to_string(),
             recommendation_id: "rec-1".to_string(),
             scope: scope.clone(),

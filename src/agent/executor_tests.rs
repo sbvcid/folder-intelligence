@@ -12,6 +12,7 @@ fn create_full_plan(dir: &std::path::Path, dry_run: bool) -> (OperationPlan, Val
     fs::write(&source, "test content").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-plan-1".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: dir.to_path_buf(),
@@ -83,6 +84,7 @@ fn test_execute_create_dir_operation() {
     let new_dir = dir.path().join("new_dir");
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-plan-2".to_string(),
         recommendation_id: "rec-2".to_string(),
         scope: dir.path().to_path_buf(),
@@ -141,6 +143,7 @@ fn test_execute_delete_operation() {
     fs::write(&file, "delete me").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-plan-3".to_string(),
         recommendation_id: "rec-3".to_string(),
         scope: dir.path().to_path_buf(),
@@ -243,6 +246,7 @@ fn test_execute_move_failure() {
     let dest = dir.path().join("dest.txt");
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-plan-fail".to_string(),
         recommendation_id: "rec-fail".to_string(),
         scope: dir.path().to_path_buf(),
@@ -341,6 +345,7 @@ fn test_undo_with_target_exists() {
     fs::write(&source, "test").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-undo-blocked".to_string(),
         recommendation_id: "rec-blocked".to_string(),
         scope: dir.path().to_path_buf(),
@@ -408,6 +413,7 @@ fn test_undo_delete_is_not_undoable() {
     fs::write(&file, "delete me").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-undo-delete".to_string(),
         recommendation_id: "rec-delete".to_string(),
         scope: dir.path().to_path_buf(),
@@ -498,6 +504,7 @@ fn test_dry_run_flag_on_plan() {
     let dir = tempdir().unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-dry-run-plan".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: dir.path().to_path_buf(),
@@ -724,6 +731,7 @@ fn test_dry_run_flag_prevents_execution() {
     fs::write(&source, "test").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-dry-run-exec".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: dir.path().to_path_buf(),
@@ -785,6 +793,7 @@ fn test_force_bypasses_blocked_not_invalid() {
     fs::write(&source, "test").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-force-blocked".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: dir.path().to_path_buf(),
@@ -853,6 +862,7 @@ fn test_force_does_not_bypass_invalid() {
     let dest = dir.path().join("dest.txt");
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-force-invalid".to_string(),
         recommendation_id: "rec-1".to_string(),
         scope: dir.path().to_path_buf(),
@@ -914,6 +924,7 @@ fn test_phase6c_executor_conflict_plus_force_rejected() {
     fs::write(&dest, "conflict").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-conflict-force".to_string(),
         recommendation_id: "rec-conflict".to_string(),
         scope: dir.path().to_path_buf(),
@@ -984,6 +995,7 @@ fn test_phase6c_executor_dry_run_rejected_on_execute() {
     fs::write(&source, "test").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-dry-run-exec".to_string(),
         recommendation_id: "rec-dry".to_string(),
         scope: dir.path().to_path_buf(),
@@ -1051,6 +1063,7 @@ fn create_move_plan_with_category_dir(
     let dest = dest_dir.join(source_name);
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-move-category".to_string(),
         recommendation_id: "rec-move".to_string(),
         scope: dir.to_path_buf(),
@@ -1138,6 +1151,7 @@ fn test_execute_move_creates_parent_directory() {
     );
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-move-parent".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -1206,6 +1220,7 @@ fn test_execute_move_missing_source() {
     let dest = dir.path().join("Documents").join("missing.txt");
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-move-missing".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -1270,6 +1285,7 @@ fn test_execute_move_source_equals_dest() {
     fs::write(&path, "content").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-move-same".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -1337,6 +1353,7 @@ fn test_execute_move_dest_conflict_rejected() {
     fs::write(&dest, "existing").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-move-conflict".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -1441,6 +1458,7 @@ fn test_undo_move_into_directory_no_parent() {
     fs::write(&source, "img").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-undo-new-parent".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),
@@ -1658,6 +1676,7 @@ fn make_move_plan(dir: &Path, plan_id: &str, source_name: &str, dest_name: &str)
     let source = dir.join(source_name);
     let dest = dir.join(dest_name);
     OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: plan_id.to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.to_path_buf(),
@@ -2061,6 +2080,7 @@ fn test_intentional_noop_is_idempotent() {
 
     let before = crate::agent::executor::Executor::default().inspect_plan_state(
         &OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "noop-plan".to_string(),
             recommendation_id: "rec".to_string(),
             scope: scope.clone(),
@@ -2103,6 +2123,7 @@ fn test_intentional_noop_is_idempotent() {
     let result = executor
         .resume_execution(
             &OperationPlan {
+                unresolved_proposals: Vec::new(),
                 id: "noop-plan".to_string(),
                 recommendation_id: "rec".to_string(),
                 scope: scope.clone(),
@@ -2148,6 +2169,7 @@ fn test_partial_execution_recovery() {
     fs::write(&source2, "second").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "partial-plan".to_string(),
         recommendation_id: "rec".to_string(),
         scope: dir.path().to_path_buf(),

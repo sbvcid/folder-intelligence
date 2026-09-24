@@ -78,6 +78,7 @@ fn test_validate_status_types() {
 #[test]
 fn test_validate_source_not_found() {
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: PathBuf::from("/tmp/test"),
@@ -131,6 +132,7 @@ fn test_validate_source_equals_dest() {
     fs::write(same_path.clone(), "content").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
@@ -185,6 +187,7 @@ fn test_validate_destination_outside_scope() {
 
     // Create a plan with a destination outside scope
     let outside_plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
@@ -247,6 +250,7 @@ fn test_preview_render() {
 #[test]
 fn test_preview_empty_plan() {
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: PathBuf::from("/tmp"),
@@ -309,6 +313,7 @@ fn test_validate_plan_consistency_duplicate_sources() {
     let scope = PathBuf::from("/tmp/test_consistency");
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
@@ -361,6 +366,7 @@ fn test_validate_plan_consistency_no_issues() {
 #[test]
 fn test_validate_create_dir_idempotent() {
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test".to_string(),
         recommendation_id: "rec".to_string(),
         scope: PathBuf::from("/tmp/test"),
@@ -592,6 +598,7 @@ fn test_validate_move_dest_file_exists_conflict() {
     fs::write(&dest, "existing").unwrap();
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-conflict".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),
@@ -639,6 +646,7 @@ fn test_validate_move_creates_parent_dep() {
     let dest = scope.join("Documents").join("doc.pdf");
 
     let plan = OperationPlan {
+        unresolved_proposals: Vec::new(),
         id: "test-parent-dep".to_string(),
         recommendation_id: "rec".to_string(),
         scope: scope.clone(),

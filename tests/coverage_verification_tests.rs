@@ -489,6 +489,7 @@ mod tests {
 
     fn make_test_plan(scope: &Path, operations: Vec<FileSystemOperation>) -> OperationPlan {
         OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "test-plan".to_string(),
             recommendation_id: "rec-test".to_string(),
             scope: scope.to_path_buf(),

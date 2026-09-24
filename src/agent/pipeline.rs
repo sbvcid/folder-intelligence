@@ -1678,6 +1678,7 @@ mod tests {
         fs::create_dir_all(scope.join("Documents")).unwrap();
 
         let plan = OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "test-approval-reject".to_string(),
             recommendation_id: "rec".to_string(),
             scope: scope.clone(),
@@ -1761,6 +1762,7 @@ mod tests {
         let dest = scope.join("Documents").join("doc.pdf");
 
         let plan = OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "policy-test".to_string(),
             recommendation_id: "rec".to_string(),
             scope: scope.clone(),
@@ -1865,6 +1867,7 @@ mod tests {
         fs::write(&dest, "existing").unwrap();
 
         let plan = OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "exec-defense".to_string(),
             recommendation_id: "rec".to_string(),
             scope: scope.clone(),
@@ -2058,6 +2061,7 @@ mod tests {
         validation.summary.total = 1;
 
         let plan = OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "test".to_string(),
             recommendation_id: "rec".to_string(),
             scope: scope.clone(),
@@ -2266,6 +2270,7 @@ mod tests {
         fs::write(scope.join("doc.pdf"), "test").unwrap();
 
         let plan = OperationPlan {
+            unresolved_proposals: Vec::new(),
             id: "serial-plan".to_string(),
             recommendation_id: "rec".to_string(),
             scope: scope.clone(),
