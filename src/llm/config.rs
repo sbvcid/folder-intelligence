@@ -14,6 +14,8 @@ pub struct LlmConfig {
     pub api_key_env: String,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 fn default_api_key_env() -> String {
@@ -32,6 +34,7 @@ impl Default for LlmConfig {
             base_url: None,
             api_key_env: default_api_key_env(),
             timeout_seconds: default_timeout_seconds(),
+            api_key: None,
         }
     }
 }
@@ -76,6 +79,11 @@ impl LlmConfig {
         if self.provider == "mock" || self.provider == "ollama" {
             return Ok(String::new());
         }
+        if let Some(key) = &self.api_key {
+            if !key.is_empty() {
+                return Ok(key.clone());
+            }
+        }
         let var_name = self.api_key_env.clone();
         std::env::var(&var_name).map_err(|_| LlmError::MissingApiKey(var_name))
     }
@@ -110,6 +118,7 @@ mod tests {
             base_url: None,
             api_key_env: default_api_key_env(),
             timeout_seconds: 60,
+            api_key: None,
         };
 
         assert_eq!(
@@ -127,6 +136,7 @@ mod tests {
             base_url: Some("http://my-ollama-server:11434/api/chat".to_string()),
             api_key_env: default_api_key_env(),
             timeout_seconds: 30,
+            api_key: None,
         };
 
         assert_eq!(
@@ -182,6 +192,7 @@ timeout_seconds = 120
             base_url: Some("https://example.com/v1".to_string()),
             api_key_env: "TEST_OPENAI_COMPATIBLE_KEY".to_string(),
             timeout_seconds: 120,
+            api_key: None,
         };
 
         assert_eq!(config.provider, "openai-compatible");
@@ -203,6 +214,7 @@ timeout_seconds = 120
             base_url: Some("https://example.com/v1".to_string()),
             api_key_env: "NONEXISTENT_TEST_KEY_12345".to_string(),
             timeout_seconds: 60,
+            api_key: None,
         };
 
         let result = config.resolve_api_key();
@@ -223,6 +235,7 @@ timeout_seconds = 120
             base_url: None,
             api_key_env: default_api_key_env(),
             timeout_seconds: 60,
+            api_key: None,
         };
 
         assert_eq!(config.resolve_api_key().unwrap(), "");
