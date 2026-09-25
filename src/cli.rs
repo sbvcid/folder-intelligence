@@ -7,7 +7,7 @@ use crate::evidence::{ScanLimits, ScanResult};
 use crate::llm::provider::LlmProvider;
 use crate::scanner::Scanner;
 use anyhow::{anyhow, Result};
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -982,30 +982,33 @@ fn do_organize(
     };
 
     // --- Refinement phase ---
-    let (final_plan, final_validation, final_recommendation) = if let Some(ref refine_text) = refine
-    {
-        let original_proposal = match result.recommendation.organization_proposal.as_ref() {
-            Some(p) => p.clone(),
-            None => {
-                eprintln!("Warning: No OrganizationProposal available; skipping refinement.");
-                let preview = render_organize_preview(
-                    &result.plan,
-                    &result.validation,
-                    &result.recommendation,
-                    &result.analysis,
-                );
-                eprintln!("{}", preview);
-                return finalize_organize(
-                    &pipeline,
-                    result.plan,
-                    result.validation,
-                    dry_run,
-                    yes,
-                    output,
-                );
-            }
-        };
+    let mut final_plan = result.plan.clone();
+    let mut final_validation = result.validation.clone();
+    let mut final_recommendation = result.recommendation.clone();
+    let mut current_proposal = match result.recommendation.organization_proposal.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!("Warning: No OrganizationProposal available; skipping refinement.");
+            let preview = render_organize_preview(
+                &result.plan,
+                &result.validation,
+                &result.recommendation,
+                &result.analysis,
+            );
+            eprintln!("{}", preview);
+            return finalize_organize(
+                &pipeline,
+                result.plan,
+                result.validation,
+                dry_run,
+                yes,
+                output,
+            );
+        }
+    };
 
+    // If initial refine instruction is provided, apply it first
+    if let Some(ref refine_text) = refine {
         let refine_provider: Arc<dyn LlmProvider> = match build_refinement_provider() {
             Ok(Some(p)) => p,
             _ => {
@@ -1016,16 +1019,15 @@ fn do_organize(
 
         let service = crate::agent::ProposalRefinementService::new(refine_provider);
 
-        eprintln!("Applying refinement...");
-
-        match service.refine(refine_text, &original_proposal) {
+        eprintln!("Applying initial refinement...");
+        match service.refine(refine_text, &current_proposal) {
             Ok(revised_proposal) => {
                 eprintln!("\nRefined Organization Proposal:");
                 eprintln!("{}", render_organization_proposal(&revised_proposal));
 
                 // Regenerate OperationPlan using ProposalConverter
                 let converter = crate::agent::ProposalConverter;
-                let mut refined_recommendation = result.recommendation.clone();
+                let mut refined_recommendation = final_recommendation.clone();
                 refined_recommendation.organization_proposal = Some(revised_proposal.clone());
                 refined_recommendation.proposed_categories =
                     revised_proposal.proposed_categories.clone();
@@ -1043,58 +1045,151 @@ fn do_organize(
                             Some(crate::agent::PlanValidationContext::default());
 
                         let refined_validation = pipeline.validate(&refined_plan);
-                        (refined_plan, refined_validation, refined_recommendation)
+                        final_plan = refined_plan;
+                        final_validation = refined_validation;
+                        final_recommendation = refined_recommendation;
+                        current_proposal = revised_proposal;
                     }
                     Err(e) => {
                         eprintln!(
                             "Could not generate plan from refined proposal: {}. Keeping original.",
                             e
                         );
-                        (
-                            result.plan.clone(),
-                            result.validation.clone(),
-                            result.recommendation.clone(),
-                        )
                     }
                 }
             }
             Err(e) => {
-                eprintln!("Refinement failed: {}. Keeping original plan.", e);
-                (
-                    result.plan.clone(),
-                    result.validation.clone(),
-                    result.recommendation.clone(),
-                )
+                eprintln!("Initial refinement failed: {}. Keeping original plan.", e);
             }
         }
-    } else {
-        (
-            result.plan.clone(),
-            result.validation.clone(),
-            result.recommendation.clone(),
-        )
-    };
-
-    // --- Preview & confirmation ---
-
-    if final_plan.operations.is_empty() {
-        let recommendation_preview =
-            render_recommendation_summary(&final_recommendation, &result.analysis);
-        eprintln!("{}", recommendation_preview);
-        eprintln!("Nothing to organize. The folder is already organized.");
-        let json = serde_json::to_string_pretty(&final_plan)?;
-        write_output(&json, output)?;
-        return Ok(());
     }
 
-    let preview = render_organize_preview(
-        &final_plan,
-        &final_validation,
-        &final_recommendation,
-        &result.analysis,
-    );
-    eprintln!("{}", preview);
+    // Loop for sequential refinements
+    loop {
+        // Show current preview
+        if final_plan.operations.is_empty() {
+            let recommendation_preview =
+                render_recommendation_summary(&final_recommendation, &result.analysis);
+            eprintln!("{}", recommendation_preview);
+            eprintln!("Nothing to organize. The folder is already organized.");
+            let json = serde_json::to_string_pretty(&final_plan)?;
+            write_output(&json, output)?;
+            return Ok(());
+        }
 
+        let preview = render_organize_preview(
+            &final_plan,
+            &final_validation,
+            &final_recommendation,
+            &result.analysis,
+        );
+        eprintln!("{}", preview);
+
+        // Ask for user action
+        eprintln!("\n[r] Refine again");
+        eprintln!("[c] Confirm");
+        eprintln!("[q] Quit");
+        eprint!("Enter choice: ");
+        std::io::stdout().flush()?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+
+        match input.as_str() {
+            "r" => {
+                // User wants to refine again
+                let refine_provider: Arc<dyn LlmProvider> = match build_refinement_provider() {
+                    Ok(Some(p)) => p,
+                    _ => {
+                        eprintln!(
+                            "Note: No LLM provider configured for refinement; using mock parser."
+                        );
+                        Arc::new(crate::llm::MockLlmProvider::with_default_organize())
+                    }
+                };
+
+                let service = crate::agent::ProposalRefinementService::new(refine_provider);
+
+                eprint!("Enter refinement instruction: ");
+                std::io::stdout().flush()?;
+                let mut instruction_line = String::new();
+                std::io::stdin().read_line(&mut instruction_line)?;
+                let instruction = instruction_line.trim();
+
+                if instruction.is_empty() {
+                    eprintln!("No instruction provided, skipping refinement.");
+                    continue;
+                }
+
+                eprintln!("Applying refinement...");
+                match service.refine(instruction, &current_proposal) {
+                    Ok(revised_proposal) => {
+                        eprintln!("\nRefined Organization Proposal:");
+                        eprintln!("{}", render_organization_proposal(&revised_proposal));
+
+                        // Regenerate OperationPlan using ProposalConverter
+                        let converter = crate::agent::ProposalConverter;
+                        let mut refined_recommendation = final_recommendation.clone();
+                        refined_recommendation.organization_proposal =
+                            Some(revised_proposal.clone());
+                        refined_recommendation.proposed_categories =
+                            revised_proposal.proposed_categories.clone();
+
+                        match converter.convert_to_plan(
+                            &revised_proposal,
+                            &refined_recommendation,
+                            &result.analysis,
+                            &scope,
+                        ) {
+                            Ok(conversion_result) => {
+                                let mut refined_plan = conversion_result.operation_plan;
+                                refined_plan.dry_run = false;
+                                refined_plan.validation_context =
+                                    Some(crate::agent::PlanValidationContext::default());
+
+                                let refined_validation = pipeline.validate(&refined_plan);
+                                final_plan = refined_plan;
+                                final_validation = refined_validation;
+                                final_recommendation = refined_recommendation;
+                                current_proposal = revised_proposal;
+                                eprintln!("Refinement applied successfully.");
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Could not generate plan from refined proposal: {}. Keeping previous refinement.",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Refinement failed: {}. Keeping previous proposal.", e);
+                    }
+                }
+            }
+            "c" => {
+                // User confirms, exit loop
+                break;
+            }
+            "q" => {
+                // User quits, show nothing to organize
+                eprintln!("Operation cancelled by user.");
+                let recommendation_preview =
+                    render_recommendation_summary(&final_recommendation, &result.analysis);
+                eprintln!("{}", recommendation_preview);
+                eprintln!("Nothing to organize.");
+                let json = serde_json::to_string_pretty(&final_plan)?;
+                write_output(&json, output)?;
+                return Ok(());
+            }
+            _ => {
+                eprintln!("Invalid choice. Please enter r, c, or q.");
+            }
+        }
+    }
+
+    // --- Final confirmation ---
     finalize_organize(
         &pipeline,
         final_plan,
@@ -2564,6 +2659,316 @@ mod tests {
         let res = service.refine("把那個改掉", &proposal);
         assert!(res.is_err());
         assert_eq!(proposal.proposed_categories[0].name, "Author A");
+    }
+
+    // Sequential refinement tests
+
+    #[test]
+    fn test_cli_sequential_rename() {
+        let proposal = make_test_proposal();
+
+        // First refinement: rename Author A to Author B
+        let rename_response1 = r#"{
+            "refinement": {
+                "type": "rename_category",
+                "from": "Author A",
+                "to": "Author B"
+            },
+            "confidence": 0.95,
+            "reason": "rename Author A to Author B"
+        }"#;
+
+        let provider1 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            rename_response1.to_string()
+        ]));
+        let service1 = crate::agent::ProposalRefinementService::new(provider1);
+        let first_result = service1
+            .refine("把 Author A 改成 Author B", &proposal)
+            .unwrap();
+
+        // Second refinement should use the current proposal (with Author B already renamed)
+        let rename_response2 = r#"{
+            "refinement": {
+                "type": "rename_category",
+                "from": "Author B",
+                "to": "Author C"
+            },
+            "confidence": 0.95,
+            "reason": "rename Author B to Author C"
+        }"#;
+
+        let provider2 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            rename_response2.to_string()
+        ]));
+        let service2 = crate::agent::ProposalRefinementService::new(provider2);
+        let second_result = service2
+            .refine("把 Author B 改成 Author C", &first_result)
+            .unwrap();
+
+        // Verify final result only has Author C
+        assert!(second_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author C"));
+        assert!(!second_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author A"));
+        assert!(!second_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author B"));
+    }
+
+    #[test]
+    fn test_cli_sequential_move() {
+        let proposal = make_test_proposal();
+
+        // First refinement: move Manga1.cbz to Author B
+        let move_response1 = r#"{
+            "refinement": {
+                "type": "move_file_to_category",
+                "file": "Manga1.cbz",
+                "category": "Author B"
+            },
+            "confidence": 0.95,
+            "reason": "move Manga1.cbz to Author B"
+        }"#;
+
+        let provider1 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            move_response1.to_string()
+        ]));
+        let service1 = crate::agent::ProposalRefinementService::new(provider1);
+        let first_result = service1
+            .refine("把 Manga1.cbz 移到 Author B", &proposal)
+            .unwrap();
+
+        // Verify first result
+        let author_b_cat = first_result
+            .proposed_categories
+            .iter()
+            .find(|c| c.name == "Author B")
+            .unwrap();
+        assert!(author_b_cat
+            .source_files
+            .iter()
+            .any(|f| f.file_name().and_then(|n| n.to_str()) == Some("Manga1.cbz")));
+
+        // Second refinement: move same file to Author A
+        let move_response2 = r#"{
+            "refinement": {
+                "type": "move_file_to_category",
+                "file": "Manga1.cbz",
+                "category": "Author A"
+            },
+            "confidence": 0.95,
+            "reason": "move Manga1.cbz to Author A"
+        }"#;
+
+        let provider2 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            move_response2.to_string()
+        ]));
+        let service2 = crate::agent::ProposalRefinementService::new(provider2);
+        let second_result = service2
+            .refine("把 Manga1.cbz 移到 Author A", &first_result)
+            .unwrap();
+
+        // Verify final result only has Manga1.cbz in Author A
+        let author_a_cat = second_result
+            .proposed_categories
+            .iter()
+            .find(|c| c.name == "Author A")
+            .unwrap();
+        let author_b_cat = second_result
+            .proposed_categories
+            .iter()
+            .find(|c| c.name == "Author B")
+            .unwrap();
+
+        assert!(author_a_cat
+            .source_files
+            .iter()
+            .any(|f| f.file_name().and_then(|n| n.to_str()) == Some("Manga1.cbz")));
+        assert!(!author_b_cat
+            .source_files
+            .iter()
+            .any(|f| f.file_name().and_then(|n| n.to_str()) == Some("Manga1.cbz")));
+    }
+
+    #[test]
+    fn test_cli_multiple_different_refinements() {
+        // Create a fresh proposal for each test to avoid conflicts
+        fn make_test_proposal_2() -> crate::agent::OrganizationProposal {
+            use crate::agent::{OrganizationProposal, ProposedCategory, RecommendationStrategy};
+            use std::path::PathBuf;
+
+            OrganizationProposal {
+                strategy: RecommendationStrategy::ByAuthor,
+                rationale: "Group files by author while preserving existing directories."
+                    .to_string(),
+                proposed_categories: vec![
+                    ProposedCategory {
+                        name: "Original Author".to_string(),
+                        purpose: "Original Author works".to_string(),
+                        target_content_types: vec!["cbz".to_string()],
+                        confidence: 0.9,
+                        is_existing: false,
+                        target_path: None,
+                        source_files: vec![PathBuf::from("Manga1.cbz")],
+                    },
+                    ProposedCategory {
+                        name: "Author B".to_string(),
+                        purpose: "Works by Author B".to_string(),
+                        target_content_types: vec!["cbz".to_string()],
+                        confidence: 0.9,
+                        is_existing: false,
+                        target_path: None,
+                        source_files: vec![PathBuf::from("Manga2.cbz")],
+                    },
+                ],
+                evidence_gaps: vec![],
+                ambiguities: vec![],
+            }
+        }
+
+        let proposal = make_test_proposal_2();
+
+        // First refinement: rename Original Author to Author X
+        let rename_response = r#"{
+            "refinement": {
+                "type": "rename_category",
+                "from": "Original Author",
+                "to": "Author X"
+            },
+            "confidence": 0.95,
+            "reason": "rename Original Author to Author X"
+        }"#;
+
+        let provider1 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            rename_response.to_string()
+        ]));
+        let service1 = crate::agent::ProposalRefinementService::new(provider1);
+        let first_result = service1
+            .refine("把 Original Author 改成 Author X", &proposal)
+            .unwrap();
+
+        // Second refinement: add new category
+        let add_response = r#"{
+            "refinement": {
+                "type": "add_category",
+                "name": "Author C",
+                "purpose": "Works by Author C"
+            },
+            "confidence": 0.95,
+            "reason": "add new category Author C"
+        }"#;
+
+        let provider2 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            add_response.to_string()
+        ]));
+        let service2 = crate::agent::ProposalRefinementService::new(provider2);
+        let second_result = service2
+            .refine("新增一个 Author C 类别", &first_result)
+            .unwrap();
+
+        // Third refinement: move file to new category
+        let move_response = r#"{
+            "refinement": {
+                "type": "move_file_to_category",
+                "file": "Manga2.cbz",
+                "category": "Author C"
+            },
+            "confidence": 0.95,
+            "reason": "move Manga2.cbz to Author C"
+        }"#;
+
+        let provider3 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            move_response.to_string()
+        ]));
+        let service3 = crate::agent::ProposalRefinementService::new(provider3);
+        let third_result = service3
+            .refine("把 Manga2.cbz 移到 Author C", &second_result)
+            .unwrap();
+
+        // Verify all three operations exist in final result
+        assert!(third_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author X"));
+        assert!(third_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author C"));
+
+        let author_c_cat = third_result
+            .proposed_categories
+            .iter()
+            .find(|c| c.name == "Author C")
+            .unwrap();
+        assert!(author_c_cat
+            .source_files
+            .iter()
+            .any(|f| f.file_name().and_then(|n| n.to_str()) == Some("Manga2.cbz")));
+    }
+
+    #[test]
+    fn test_cli_failed_second_refinement_preserves_first() {
+        let proposal = make_test_proposal();
+
+        // First refinement: rename Author A to Author B (should succeed)
+        let rename_response = r#"{
+            "refinement": {
+                "type": "rename_category",
+                "from": "Author A",
+                "to": "Author B"
+            },
+            "confidence": 0.95,
+            "reason": "rename Author A to Author B"
+        }"#;
+
+        let provider1 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            rename_response.to_string()
+        ]));
+        let service1 = crate::agent::ProposalRefinementService::new(provider1);
+        let first_result = service1
+            .refine("把 Author A 改成 Author B", &proposal)
+            .unwrap();
+
+        // Verify first result
+        assert!(first_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author B"));
+        assert!(!first_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author A"));
+
+        // Simulate a second refinement that fails
+        let fail_response = r#"{
+            "refinement": null,
+            "confidence": 0.1,
+            "reason": "category not found"
+        }"#;
+
+        let provider2 = Arc::new(crate::llm::MockLlmProvider::new(vec![
+            fail_response.to_string()
+        ]));
+        let service2 = crate::agent::ProposalRefinementService::new(provider2);
+        let second_res = service2.refine("把 Author X 改成 Author Y", &first_result);
+
+        // Second refinement should fail
+        assert!(second_res.is_err());
+
+        // First result should still be preserved
+        assert!(first_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author B"));
+        assert!(!first_result
+            .proposed_categories
+            .iter()
+            .any(|c| c.name == "Author A"));
     }
 }
 
