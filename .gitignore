@@ -2,3 +2,7 @@ target/
 fixtures/
 
 folder-intelligence.exe
+
+# Test output files
+cargo_test_output.txt
+*.test_output.txt
