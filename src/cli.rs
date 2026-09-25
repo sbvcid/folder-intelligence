@@ -2665,7 +2665,31 @@ mod tests {
 
     #[test]
     fn test_cli_sequential_rename() {
-        let proposal = make_test_proposal();
+        // Create a fresh proposal for this test to avoid conflicts with other tests
+        fn make_test_proposal_for_sequential() -> crate::agent::OrganizationProposal {
+            use crate::agent::{OrganizationProposal, ProposedCategory, RecommendationStrategy};
+            use std::path::PathBuf;
+            
+            OrganizationProposal {
+                strategy: RecommendationStrategy::ByAuthor,
+                rationale: "Sequential refinement test".to_string(),
+                proposed_categories: vec![
+                    ProposedCategory {
+                        name: "Author A".to_string(),
+                        purpose: "Author A works".to_string(),
+                        target_content_types: vec![],
+                        confidence: 0.95,
+                        is_existing: false,
+                        target_path: Some(PathBuf::from("/scope/Author A")),
+                        source_files: vec![PathBuf::from("Manga1.cbz")],
+                    },
+                ],
+                evidence_gaps: vec![],
+                ambiguities: vec![],
+            }
+        }
+        
+        let proposal = make_test_proposal_for_sequential();
 
         // First refinement: rename Author A to Author B
         let rename_response1 = r#"{
