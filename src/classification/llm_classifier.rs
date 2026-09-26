@@ -229,7 +229,7 @@ pub enum LlmClassificationError {
 
 #[derive(Debug, Clone)]
 pub struct ClassificationWithStrategy {
-    pub classification: ClassificationResult,
+    pub classifications: Vec<ClassificationResult>,
     pub strategy: Option<LlmStrategyInfo>,
     pub proposal: Option<OrganizationProposal>,
 }
@@ -274,13 +274,6 @@ impl LlmClassifier {
             &collect_allowed_categories(request),
         )?;
 
-        let classification = adapter_to_classification_result(
-            &validated,
-            target_path,
-            allowed_category_paths,
-            request.observations.len(),
-        );
-
         let recommendation_strategy = output
             .organization_strategy
             .as_ref()
@@ -292,8 +285,36 @@ impl LlmClassifier {
             .as_ref()
             .map(|prop| map_llm_proposal(prop, recommendation_strategy, target_path));
 
+        // Convert each validated item to its own ClassificationResult
+        let classifications = if validated.is_empty() {
+            // If no items were classified, produce a single LeaveUnclassified result
+            vec![item_to_classification_result(
+                &LlmClassificationItem {
+                    path: String::new(),
+                    category: String::new(),
+                    confidence: 0.0,
+                    reason: None,
+                },
+                target_path,
+                allowed_category_paths,
+                request.observations.len(),
+            )]
+        } else {
+            validated
+                .iter()
+                .map(|item| {
+                    item_to_classification_result(
+                        item,
+                        target_path,
+                        allowed_category_paths,
+                        request.observations.len(),
+                    )
+                })
+                .collect()
+        };
+
         Ok(ClassificationWithStrategy {
-            classification,
+            classifications,
             strategy: output.organization_strategy,
             proposal,
         })
@@ -385,6 +406,57 @@ fn adapter_to_classification_result(
     allowed_category_paths: &[(String, PathBuf)],
     observation_count: usize,
 ) -> ClassificationResult {
+    // This function is kept for backward compatibility but is deprecated.
+    // It aggregates all items into a single result (legacy behavior).
+    // Use item_to_classification_result for per-file results instead.
+    let best = validated.iter().max_by(|a, b| {
+        a.confidence
+            .partial_cmp(&b.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    if let Some(best_item) = best {
+        item_to_classification_result(
+            best_item,
+            target_path,
+            allowed_category_paths,
+            observation_count,
+        )
+    } else {
+        // No items - return empty result
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        ClassificationResult {
+            target_path: target_path.to_path_buf(),
+            decision: ClassificationDecision::LeaveUnclassified,
+            selected_candidate: None,
+            proposed_category_name: None,
+            confidence: 0.0,
+            confidence_band: ConfidenceBand::Low,
+            candidates_considered: observation_count,
+            supporting_evidence: Vec::new(),
+            alternatives: Vec::new(),
+            uncertainty: vec![UncertaintyReason::InsufficientPrecedent],
+            classification_reason: None,
+            warnings: vec![],
+            classified_at: now,
+            schema_version: CLASSIFICATION_SCHEMA_VERSION.to_string(),
+            provider: None,
+            model: None,
+        }
+    }
+}
+
+// New function: Convert a single LlmClassificationItem to its own ClassificationResult
+fn item_to_classification_result(
+    item: &LlmClassificationItem,
+    target_path: &Path,
+    allowed_category_paths: &[(String, PathBuf)],
+    observation_count: usize,
+) -> ClassificationResult {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -394,53 +466,32 @@ fn adapter_to_classification_result(
     let mut proposed_category_name = None;
     let mut supporting_evidence = Vec::new();
     let mut alternatives = Vec::new();
-    let mut confidence = 0.0;
-    let mut confidence_band = ConfidenceBand::Low;
+    let mut confidence = item.confidence;
+    let mut confidence_band = ConfidenceBand::from_confidence(confidence);
     let mut decision = ClassificationDecision::LeaveUnclassified;
-    let mut classification_reason: Option<String> = None;
+    let mut classification_reason = item.reason.clone();
 
-    let best = validated.iter().max_by(|a, b| {
-        a.confidence
-            .partial_cmp(&b.confidence)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let matched_category = allowed_category_paths
+        .iter()
+        .find(|(name, _)| name == &item.category);
 
-    if let Some(best_item) = best {
-        confidence = best_item.confidence;
-        confidence_band = ConfidenceBand::from_confidence(confidence);
+    if let Some((_, cat_path)) = matched_category {
+        selected_candidate = Some(cat_path.clone());
+        proposed_category_name = Some(item.category.clone());
+        decision = ClassificationDecision::MoveExisting;
 
-        let matched_category = allowed_category_paths
-            .iter()
-            .find(|(name, _)| name == &best_item.category);
-
-        if let Some((_, cat_path)) = matched_category {
-            selected_candidate = Some(cat_path.clone());
-            proposed_category_name = Some(best_item.category.clone());
-            decision = ClassificationDecision::MoveExisting;
-            classification_reason = best_item.reason.clone();
-
-            supporting_evidence.push(SupportingEvidence {
-                evidence_type: "LLMClassification".to_string(),
-                description: format!("LLM classified as '{}'", best_item.category),
-                score: confidence,
-            });
-
-            for item in validated.iter().filter(|item| item.path != best_item.path) {
-                alternatives.push(AlternativeCandidate {
-                    candidate_name: item.category.clone(),
-                    candidate_path: matched_category.map(|(_, p)| p.clone()).unwrap_or_default(),
-                    score: item.confidence,
-                    rejection_reason: format!(
-                        "Lower confidence ({:.2} vs {:.2})",
-                        item.confidence, confidence
-                    ),
-                });
-            }
-        }
+        supporting_evidence.push(SupportingEvidence {
+            evidence_type: "LLMClassification".to_string(),
+            description: format!("LLM classified '{}' as '{}'", item.path, item.category),
+            score: confidence,
+        });
     }
 
-    let unclassified_count = observation_count.saturating_sub(validated.len());
-    let uncertainty: Vec<UncertaintyReason> = if unclassified_count > 0 {
+    // Note: We don't add alternatives for individual items since each item
+    // represents a single file's classification. Alternatives are not per-file concepts.
+
+    // Uncertainty is per-file based on whether this file was classified
+    let uncertainty: Vec<UncertaintyReason> = if item.category.is_empty() {
         vec![UncertaintyReason::InsufficientPrecedent]
     } else {
         vec![]
@@ -453,7 +504,7 @@ fn adapter_to_classification_result(
         proposed_category_name,
         confidence,
         confidence_band,
-        candidates_considered: observation_count,
+        candidates_considered: 1, // Per-file, so only 1 candidate considered
         supporting_evidence,
         alternatives,
         uncertainty,
@@ -571,7 +622,7 @@ mod tests {
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
 
-        let classification = result.unwrap().classification;
+        let classification = &result.unwrap().classifications[0];
         assert_eq!(
             classification.decision,
             ClassificationDecision::MoveExisting
@@ -622,7 +673,7 @@ mod tests {
             Some("User requested author-based organization.")
         );
 
-        let classification = with_strategy.classification;
+        let classification = &with_strategy.classifications[0];
         assert_eq!(
             classification.decision,
             ClassificationDecision::MoveExisting
@@ -1073,7 +1124,7 @@ mod tests {
             result.err()
         );
 
-        let classification = result.unwrap().classification;
+        let classification = &result.unwrap().classifications[0];
         assert_eq!(
             classification.decision,
             ClassificationDecision::LeaveUnclassified
@@ -1107,7 +1158,7 @@ mod tests {
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok());
 
-        let classification = result.unwrap().classification;
+        let classification = &result.unwrap().classifications[0];
         assert_eq!(
             classification.decision,
             ClassificationDecision::MoveExisting
@@ -1149,8 +1200,8 @@ mod tests {
 
         assert!(result_o.is_ok());
         assert!(result_p.is_ok());
-        assert_eq!(result_o.as_ref().unwrap().classification.confidence, 0.95);
-        assert_eq!(result_p.as_ref().unwrap().classification.confidence, 0.95);
+        assert_eq!(result_o.as_ref().unwrap().classifications[0].confidence, 0.95);
+        assert_eq!(result_p.as_ref().unwrap().classifications[0].confidence, 0.95);
     }
 
     #[test]
@@ -1175,7 +1226,7 @@ mod tests {
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
 
-        let classification = result.unwrap().classification;
+        let classification = &result.unwrap().classifications[0];
         assert_eq!(classification.classification_reason, None);
     }
 
@@ -1225,7 +1276,7 @@ mod tests {
 
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
-        assert_eq!(result.unwrap().classification.confidence, 0.9);
+        assert_eq!(result.unwrap().classifications[0].confidence, 0.9);
 
         mock.assert();
     }
@@ -1283,7 +1334,7 @@ mod tests {
 
         let result = classifier.classify(&request, &target_path, &allowed_paths);
         assert!(result.is_ok(), "should succeed: {:?}", result.err());
-        assert_eq!(result.unwrap().classification.confidence, 0.95);
+        assert_eq!(result.unwrap().classifications[0].confidence, 0.95);
 
         mock.assert();
     }

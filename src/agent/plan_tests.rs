@@ -933,7 +933,10 @@ fn test_move_into_existing_category_directory() {
         assert!(dest.starts_with(&scope), "Move dest must be within scope");
         let parent = dest.parent().unwrap_or(dest);
         assert!(
-            parent.ends_with("Documents")
+            parent.ends_with("documents")
+                || parent.ends_with("images")
+                || parent.ends_with("archives")
+                || parent.ends_with("Documents")
                 || parent.ends_with("Images")
                 || parent.ends_with("Archives"),
             "dest parent should be a category directory: {:?}",

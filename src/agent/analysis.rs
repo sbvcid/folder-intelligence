@@ -478,7 +478,7 @@ impl EvidenceAnalyzer {
             .map_err(|e| AnalyzerError::ClassificationFailed(e.to_string()))?;
 
         Ok((
-            vec![result.classification],
+            result.classifications,
             result.strategy,
             result.proposal,
         ))

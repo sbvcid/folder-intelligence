@@ -261,20 +261,46 @@ impl Pipeline {
                             .to_lowercase()
                             .replace(' ', "_")
                             .replace('-', "_");
-                        // Ensure CreateCategory operation matches
-                        let has_matching_create =
-                            recommendation.proposed_operations.iter().any(|op| {
-                                if let ProposedOperation::CreateCategory { name, .. } = op {
-                                    name.to_lowercase() == expected_normalized
-                                        || expected_normalized.contains(name)
+                        
+                        // Check if the proposed category directory already exists in candidate_categories
+                        // If it exists, the recommendation may legitimately convert CreateCategory to MoveExisting
+                        let directory_exists = analysis
+                            .candidate_categories
+                            .iter()
+                            .any(|c| c.name.to_lowercase().replace(' ', "_").replace('-', "_") == expected_normalized);
+                        
+                        if directory_exists {
+                            // Directory exists - recommendation may convert CreateCategory to MoveExisting
+                            // Check that there's a matching MoveCategory operation for this category
+                            let has_matching_move = recommendation.proposed_operations.iter().any(|op| {
+                                if let ProposedOperation::MoveCategory { to_category, .. } = op {
+                                    let normalized_to = to_category.to_lowercase().replace(' ', "_").replace('-', "_");
+                                    normalized_to == expected_normalized
                                 } else {
                                     false
                                 }
                             });
-                        if !has_matching_create && !recommendation.proposed_operations.is_empty() {
-                            return Err(PipelineError::Plan(PlanError::ConflictingOperations(
-                                format!("Integrity violation: Classification CreateCategory proposes '{}' but recommendation creates different category", proposed_name),
-                            )));
+                            if !has_matching_move && !recommendation.proposed_operations.is_empty() {
+                                return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                                    format!("Integrity violation: Classification CreateCategory proposes '{}' (directory exists) but recommendation has no matching MoveCategory", proposed_name),
+                                )));
+                            }
+                        } else {
+                            // Directory doesn't exist - ensure CreateCategory operation matches
+                            let has_matching_create =
+                                recommendation.proposed_operations.iter().any(|op| {
+                                    if let ProposedOperation::CreateCategory { name, .. } = op {
+                                        name.to_lowercase() == expected_normalized
+                                            || expected_normalized.contains(name)
+                                    } else {
+                                        false
+                                    }
+                                });
+                            if !has_matching_create && !recommendation.proposed_operations.is_empty() {
+                                return Err(PipelineError::Plan(PlanError::ConflictingOperations(
+                                    format!("Integrity violation: Classification CreateCategory proposes '{}' but recommendation creates different category", proposed_name),
+                                )));
+                            }
                         }
                     }
                 }

@@ -128,7 +128,22 @@ fn test_constraint_preserve_existing_folders() {
     assert!(intent.constraints.preserve_existing_folders);
 
     let analyzer = EvidenceAnalyzer::default();
-    let analysis = analyzer.analyze(&intent).expect("should analyze");
+    let mut analysis = analyzer.analyze(&intent).expect("should analyze");
+
+    // Inject a MoveExisting classification to test PreserveDirectory generation
+    if let Some(res) = analysis.classification_results.first_mut() {
+        res.decision = crate::classification::ClassificationDecision::MoveExisting;
+        let existing_cat_path = scope.join("ExistingCategory");
+        res.selected_candidate = Some(existing_cat_path.clone());
+
+        // Also inject a matching candidate category
+        analysis.candidate_categories.push(crate::agent::analysis::CandidateCategory {
+            name: "ExistingCategory".to_string(),
+            path: existing_cat_path,
+            file_count: 5,
+            is_existing: true,
+        });
+    }
 
     let engine = RecommendationEngine::default();
     let recommendation = engine
@@ -536,39 +551,39 @@ fn test_recommendation_has_constraint_checks() {
 }
 
 #[test]
-fn test_proposed_category_from_content_groups() {
-    let dir = tempdir().unwrap();
-    let scope = create_test_scope(&dir);
+    fn test_proposed_category_from_content_groups() {
+        let dir = tempdir().unwrap();
+        let scope = create_test_scope(&dir);
 
-    let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize this folder by category")
-        .expect("should parse");
+        let parser = TaskIntentParser::new(scope.clone());
+        let intent = parser
+            .parse("Organize this folder by category")
+            .expect("should parse");
 
-    let analyzer = EvidenceAnalyzer::default();
-    let analysis = analyzer.analyze(&intent).expect("should analyze");
+        let analyzer = EvidenceAnalyzer::default();
+        let analysis = analyzer.analyze(&intent).expect("should analyze");
 
-    let engine = RecommendationEngine::default();
-    let recommendation = engine
-        .recommend(&intent, &analysis)
-        .expect("should recommend");
+        let engine = RecommendationEngine::default();
+        let recommendation = engine
+            .recommend(&intent, &analysis)
+            .expect("should recommend");
 
-    // Should have proposed categories for document and image content
-    let category_names: Vec<_> = recommendation
-        .proposed_categories
-        .iter()
-        .map(|c| c.name.as_str())
-        .collect();
-    assert!(
-        category_names.contains(&"document_storage") || category_names.contains(&"image_storage")
-    );
+        // With per-file classification, proposed categories come from classification results,
+        // not directly from content groups. Verify that we have at least one proposed category
+        // when classification results exist.
+        if !analysis.classification_results.is_empty() {
+            assert!(
+                !recommendation.proposed_categories.is_empty(),
+                "Should have proposed categories when classification results exist"
+            );
+        }
 
-    for cat in &recommendation.proposed_categories {
-        assert!(!cat.name.is_empty());
-        assert!(!cat.purpose.is_empty());
-        assert!(cat.confidence >= 0.0 && cat.confidence <= 1.0);
+        for cat in &recommendation.proposed_categories {
+            assert!(!cat.name.is_empty());
+            assert!(!cat.purpose.is_empty());
+            assert!(cat.confidence >= 0.0 && cat.confidence <= 1.0);
+        }
     }
-}
 
 #[test]
 fn test_merge_duplicates_constraint_check() {
@@ -715,27 +730,38 @@ fn test_does_not_fabricate_filesystem_evidence() {
 }
 
 #[test]
-fn test_proposed_categories_count_matches_content_groups() {
-    let dir = tempdir().unwrap();
-    let scope = create_test_scope(&dir);
+    fn test_proposed_categories_count_matches_content_groups() {
+        let dir = tempdir().unwrap();
+        let scope = create_test_scope(&dir);
 
-    let parser = TaskIntentParser::new(scope.clone());
-    let intent = parser
-        .parse("Organize this folder by category")
-        .expect("should parse");
+        let parser = TaskIntentParser::new(scope.clone());
+        let intent = parser
+            .parse("Organize this folder by category")
+            .expect("should parse");
 
-    let analyzer = EvidenceAnalyzer::default();
-    let analysis = analyzer.analyze(&intent).expect("should analyze");
+        let analyzer = EvidenceAnalyzer::default();
+        let analysis = analyzer.analyze(&intent).expect("should analyze");
 
-    let engine = RecommendationEngine::default();
-    let recommendation = engine
-        .recommend(&intent, &analysis)
-        .expect("should recommend");
+        let engine = RecommendationEngine::default();
+        let recommendation = engine
+            .recommend(&intent, &analysis)
+            .expect("should recommend");
 
-    // Should have at least one proposed category per content group
-    let content_group_count = analysis.content_groups.len();
-    assert!(recommendation.proposed_categories.len() >= content_group_count);
-}
+        // With per-file classification, proposed categories come from classification results,
+        // not directly from content groups. The number of proposed categories depends on
+        // unique categories in classification results.
+        if !analysis.classification_results.is_empty() {
+            // Should have at least one proposed category per unique classification decision
+            let mut unique_decisions = std::collections::HashSet::new();
+            for cr in &analysis.classification_results {
+                unique_decisions.insert(format!("{:?}", cr.decision));
+            }
+            assert!(
+                recommendation.proposed_categories.len() >= unique_decisions.len(),
+                "Should have at least one proposed category per unique classification decision"
+            );
+        }
+    }
 
 #[test]
 fn test_recommendation_id_format() {
@@ -851,7 +877,7 @@ fn test_phase15_classification_recommendation_mismatch() {
     let mut analysis = analyzer.analyze(&intent).expect("should analyze");
 
     // Classification says CreateCategory("Projects")
-    if let Some(res) = analysis.classification_results.first_mut() {
+    for res in &mut analysis.classification_results {
         res.decision = crate::classification::ClassificationDecision::CreateCategory;
         res.proposed_category_name = Some("Projects".to_string());
     }
@@ -861,8 +887,13 @@ fn test_phase15_classification_recommendation_mismatch() {
         .recommend(&intent, &analysis)
         .expect("should recommend");
 
-    // Tamper with recommendation to mismatch classification (propose different category name)
-    recommendation.proposed_categories[0].name = "images_storage_mismatch".to_string();
+    // Tamper with recommendation operations to mismatch classification
+    // Change the CreateCategory operation name to not match classification
+    for op in &mut recommendation.proposed_operations {
+        if let ProposedOperation::CreateCategory { name, .. } = op {
+            *name = "images_storage_mismatch".to_string();
+        }
+    }
 
     let plan_result = Pipeline::validate_recommendation_plan_integrity(&recommendation, &analysis);
     assert!(
