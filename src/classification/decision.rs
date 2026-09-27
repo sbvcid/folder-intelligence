@@ -68,6 +68,7 @@ impl DecisionEngine {
                 schema_version: "3.0.0".to_string(),
                 provider: None,
                 model: None,
+                source_path: Some(target.evidence.name.clone()),
             };
         }
 
@@ -219,6 +220,7 @@ impl DecisionEngine {
             schema_version: "3.0.0".to_string(),
             provider: None,
             model: None,
+            source_path: Some(target.evidence.name.clone()),
         }
     }
 }

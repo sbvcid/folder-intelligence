@@ -84,6 +84,8 @@ pub struct ClassificationResult {
     pub classified_at: u64,
     pub schema_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

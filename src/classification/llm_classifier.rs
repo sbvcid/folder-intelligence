@@ -220,9 +220,6 @@ pub enum LlmClassificationError {
     #[error("Path traversal detected: {0}")]
     PathTraversal(String),
 
-    #[error("File not in observations: {0}")]
-    UnobservedFile(String),
-
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 }
@@ -268,9 +265,10 @@ impl LlmClassifier {
             ))
         })?;
 
+        let observed_paths = collect_observed_paths(request);
         let validated = validate_classifications(
             &output.classifications,
-            &collect_observed_paths(request),
+            &observed_paths,
             &collect_allowed_categories(request),
         )?;
 
@@ -298,6 +296,7 @@ impl LlmClassifier {
                 target_path,
                 allowed_category_paths,
                 request.observations.len(),
+                &observed_paths,
             )]
         } else {
             validated
@@ -308,6 +307,7 @@ impl LlmClassifier {
                         target_path,
                         allowed_category_paths,
                         request.observations.len(),
+                        &observed_paths,
                     )
                 })
                 .collect()
@@ -335,13 +335,13 @@ fn collect_allowed_categories(request: &LlmClassificationRequest) -> HashSet<Str
 
 fn validate_classifications(
     items: &[LlmClassificationItem],
-    observed_paths: &HashSet<String>,
+    _observed_paths: &HashSet<String>,
     allowed_categories: &HashSet<String>,
 ) -> Result<Vec<LlmClassificationItem>, LlmClassificationError> {
     let mut result = Vec::new();
 
     for item in items {
-        validate_path(&item.path, observed_paths)?;
+        validate_path(&item.path)?;
         if !allowed_categories.is_empty() {
             validate_category(&item.category, allowed_categories)?;
         }
@@ -354,7 +354,6 @@ fn validate_classifications(
 
 fn validate_path(
     path: &str,
-    observed_paths: &HashSet<String>,
 ) -> Result<(), LlmClassificationError> {
     let p = Path::new(path);
 
@@ -369,10 +368,6 @@ fn validate_path(
             }
             _ => {}
         }
-    }
-
-    if !observed_paths.contains(path) {
-        return Err(LlmClassificationError::UnobservedFile(path.to_string()));
     }
 
     Ok(())
@@ -421,6 +416,7 @@ fn adapter_to_classification_result(
             target_path,
             allowed_category_paths,
             observation_count,
+            &HashSet::new(),
         )
     } else {
         // No items - return empty result
@@ -446,7 +442,17 @@ fn adapter_to_classification_result(
             schema_version: CLASSIFICATION_SCHEMA_VERSION.to_string(),
             provider: None,
             model: None,
+            source_path: None,
         }
+    }
+}
+
+fn is_bat_file(path: &str) -> bool {
+    let p = Path::new(path);
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        ext.eq_ignore_ascii_case("bat")
+    } else {
+        false
     }
 }
 
@@ -455,7 +461,8 @@ fn item_to_classification_result(
     item: &LlmClassificationItem,
     target_path: &Path,
     allowed_category_paths: &[(String, PathBuf)],
-    observation_count: usize,
+    _observation_count: usize,
+    observed_paths: &HashSet<String>,
 ) -> ClassificationResult {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -465,33 +472,35 @@ fn item_to_classification_result(
     let mut selected_candidate = None;
     let mut proposed_category_name = None;
     let mut supporting_evidence = Vec::new();
-    let mut alternatives = Vec::new();
-    let mut confidence = item.confidence;
-    let mut confidence_band = ConfidenceBand::from_confidence(confidence);
+    let alternatives = Vec::new();
+    let confidence = item.confidence;
+    let confidence_band = ConfidenceBand::from_confidence(confidence);
     let mut decision = ClassificationDecision::LeaveUnclassified;
-    let mut classification_reason = item.reason.clone();
+    let classification_reason = item.reason.clone();
 
-    let matched_category = allowed_category_paths
-        .iter()
-        .find(|(name, _)| name == &item.category);
+    let is_observed = observed_paths.is_empty() || observed_paths.contains(&item.path);
+    let is_bat = is_bat_file(&item.path);
 
-    if let Some((_, cat_path)) = matched_category {
-        selected_candidate = Some(cat_path.clone());
-        proposed_category_name = Some(item.category.clone());
-        decision = ClassificationDecision::MoveExisting;
+    if is_observed && !is_bat && !item.category.is_empty() {
+        let matched_category = allowed_category_paths
+            .iter()
+            .find(|(name, _)| name == &item.category);
 
-        supporting_evidence.push(SupportingEvidence {
-            evidence_type: "LLMClassification".to_string(),
-            description: format!("LLM classified '{}' as '{}'", item.path, item.category),
-            score: confidence,
-        });
+        if let Some((_, cat_path)) = matched_category {
+            selected_candidate = Some(cat_path.clone());
+            proposed_category_name = Some(item.category.clone());
+            decision = ClassificationDecision::MoveExisting;
+
+            supporting_evidence.push(SupportingEvidence {
+                evidence_type: "LLMClassification".to_string(),
+                description: format!("LLM classified '{}' as '{}'", item.path, item.category),
+                score: confidence,
+            });
+        }
     }
 
-    // Note: We don't add alternatives for individual items since each item
-    // represents a single file's classification. Alternatives are not per-file concepts.
-
     // Uncertainty is per-file based on whether this file was classified
-    let uncertainty: Vec<UncertaintyReason> = if item.category.is_empty() {
+    let uncertainty: Vec<UncertaintyReason> = if item.category.is_empty() || !is_observed || is_bat {
         vec![UncertaintyReason::InsufficientPrecedent]
     } else {
         vec![]
@@ -514,6 +523,7 @@ fn item_to_classification_result(
         schema_version: CLASSIFICATION_SCHEMA_VERSION.to_string(),
         provider: None,
         model: None,
+        source_path: Some(item.path.clone()),
     }
 }
 
@@ -1069,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unobserved_file_rejection() {
+    fn test_unobserved_file_becomes_leave_unclassified() {
         let json = r#"{"classifications":[{"path":"nonexistent.pdf","category":"Documents","confidence":0.9}]}"#;
         let provider = mock_provider(vec![("chat", json)]);
         let classifier = LlmClassifier::new(Arc::new(provider));
@@ -1087,13 +1097,46 @@ mod tests {
         )];
 
         let result = classifier.classify(&request, &target_path, &allowed_paths);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            LlmClassificationError::UnobservedFile(path) => {
-                assert_eq!(path, "nonexistent.pdf");
-            }
-            other => panic!("expected UnobservedFile, got: {:?}", other),
-        }
+        assert!(result.is_ok());
+        let strategy = result.unwrap();
+        assert_eq!(strategy.classifications.len(), 1);
+        assert_eq!(strategy.classifications[0].decision, ClassificationDecision::LeaveUnclassified);
+        assert!(strategy.classifications[0].selected_candidate.is_none());
+    }
+
+    #[test]
+    fn test_bat_file_never_classified_to_category() {
+        let mut obs = sample_observations();
+        obs.push(FileObservation {
+            relative_path: "script.bat".to_string(),
+            filename: "script.bat".to_string(),
+            extension: Some("bat".to_string()),
+            size_bytes: Some(100),
+            file_count: 0,
+        });
+
+        let json = r#"{"classifications":[{"path":"script.bat","category":"Documents","confidence":0.95}]}"#;
+        let provider = mock_provider(vec![("chat", json)]);
+        let classifier = LlmClassifier::new(Arc::new(provider));
+
+        let request = LlmClassificationRequest {
+            observations: obs,
+            allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
+        };
+
+        let target_path = PathBuf::from("/test/scope");
+        let allowed_paths = vec![(
+            "Documents".to_string(),
+            PathBuf::from("/test/scope/Documents"),
+        )];
+
+        let result = classifier.classify(&request, &target_path, &allowed_paths);
+        assert!(result.is_ok());
+        let strategy = result.unwrap();
+        assert_eq!(strategy.classifications.len(), 1);
+        assert_eq!(strategy.classifications[0].decision, ClassificationDecision::LeaveUnclassified);
+        assert!(strategy.classifications[0].selected_candidate.is_none());
     }
 
     #[test]

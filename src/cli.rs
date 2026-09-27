@@ -1,15 +1,34 @@
-use crate::agent::proposal_refinement_parser::{ProposalRefinementParser, RefinementParseError};
-use crate::agent::proposal_refiner::{ProposalRefinement, ProposalRefiner};
-use crate::agent::Pipeline;
-use crate::classification::AiClassifier;
-use crate::classification::ClassificationProcessor;
-use crate::evidence::{ScanLimits, ScanResult};
-use crate::llm::provider::LlmProvider;
-use crate::scanner::Scanner;
-use anyhow::{anyhow, Result};
-use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::io::{BufRead, Write};
 use std::sync::Arc;
+use anyhow::{anyhow, Result};
+use crate::llm::provider::LlmProvider;
+use crate::classification::processor::ClassificationProcessor;
+use crate::classification::ai_provider::AiClassifier;
+use crate::agent::{
+    Approval, AnalyzerError, Ambiguity, AmbiguityReason, Anomaly, AnomalyType, ApplyError,
+    ApplyOptions, ApplyResult, CandidateCategory, ClarificationEngine, ClarificationError,
+    ClarificationQuestion, ClarifiedIntent, CleanRule, ConstraintCheck, ConstraintSet,
+    ConstraintViolation, ContentGroup, ContentType, DecisionAnswer, DecisionCategory,
+    EstimatedImpact, EvidenceAnalyzer, EvidenceGap, ExecutionResult, ExecutionStatus,
+    ExecutionVerificationResult, Executor, FileMetadata, FileSystemOperation,
+    FilesystemState, GapType, Goal, IntentParseError, LogEntry, OperationExecutionState,
+    OperationLog, OperationPlan, Pipeline, PipelineError,
+    PipelineOptions, PipelineResult, PlanError, PlanGenerator, PlanPreview,
+    PlanValidationContext, PlanValidator, Policy, PolicyDecision, Precondition,
+    ProposalConversionResult, ProposalConverter, ProposalRefinement,
+    ProposalRefinementError, ProposalRefinementParser, ProposalRefinementService,
+    ProposalRefiner, ProposedCategory, ProposedOperation, Recommendation,
+    RecommendationEngine, RecommendationError, RecommendationStrategy,
+    RecommendationWarning, RefinementParseError, RefinementParseOutput,
+    RefinementServiceError, ScopeLock, StructureSummary, TaskAnalysis,
+    TaskIntent, TaskIntentParser, UndoConflict, UndoLogEntry, UndoResult,
+    UnresolvedItem, UnresolvedReason, UserDecision, ValidatedOperation,
+    ValidationResult, ValidationStatus, ValidationSummary, ValidationWarning,
+    WarningType, VerificationCheck, VerificationStatus, VerificationSummary,
+};
+use crate::evidence::{ScanLimits, ScanResult};
+use crate::scanner::Scanner;
 
 pub struct Cli {
     pub command: Commands,
@@ -1353,8 +1372,29 @@ fn render_recommendation_summary(
 
     if !recommendation.proposed_operations.is_empty() {
         output.push_str("\n  AI Suggested Operations:\n");
+        let mut grouped_moves: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         for op in &recommendation.proposed_operations {
-            output.push_str(&format!("    • {}\n", op.description()));
+            match op {
+                ProposedOperation::MoveCategory {
+                    strategy: _,
+                    content_type: _,
+                    file_count,
+                    to_category,
+                } => {
+                    let key = to_category.clone();
+                    *grouped_moves.entry(key).or_insert(0) += file_count;
+                }
+                _ => {
+                    output.push_str(&format!("    • {}\n", op.description()));
+                }
+            }
+        }
+        for (category, total) in grouped_moves.iter() {
+            output.push_str(&format!(
+                "    • Move {} files to '{}'\n",
+                total, category
+            ));
         }
     }
 
@@ -1490,17 +1530,48 @@ fn render_organize_preview(
                 crate::classification::ClassificationDecision::AskUser => "Requires user input",
             };
 
-            let files_in_scope: Vec<&PathBuf> = move_files
-                .iter()
-                .filter(|f| {
-                    f.parent()
-                        .map(|p| p == cr.target_path || cr.target_path.starts_with(p))
-                        .unwrap_or(false)
-                        || f.starts_with(&cr.target_path)
-                })
-                .collect();
+            // Each file in the explanation must be associated with its exact source identity.
+            // The source identity comes from ClassificationResult.source_path (the LLM item.path),
+            // NOT from selected_candidate (which is a category directory shared by many files).
+            // This ensures:
+            // File A -> ClassificationResult A (with source_path = A's filename) -> Evidence A
+            // File B -> ClassificationResult B (with source_path = B's filename) -> Evidence B
+            // Even when both target the same category.
+            let files_for_cr: Vec<&PathBuf> = if let Some(ref source_name) = cr.source_path {
+                // The source_path is the source file identity from the LLM classification item.
+                // Match move_files that have this source file identity (by filename match).
+                let source_filename = std::path::Path::new(source_name)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                move_files
+                    .iter()
+                    .filter(|f| {
+                        f.file_name()
+                            .map(|n| n.to_string_lossy().to_string() == source_filename)
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            } else {
+                // Fallback: if no source_path (e.g., empty/legacy results), match by destination.
+                let files_for_cr_fallback: Vec<&PathBuf> = move_files
+                    .iter()
+                    .filter(|f| {
+                        cr.selected_candidate
+                            .as_ref()
+                            .map(|dest_path| {
+                                f.parent()
+                                    .map(|p| p == dest_path)
+                                    .unwrap_or(false)
+                                    || f.starts_with(dest_path)
+                            })
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                files_for_cr_fallback
+            };
 
-            for file in files_in_scope {
+            for file in files_for_cr {
                 explained_files.push(file.clone());
                 output.push_str(&format!(
                     "    {} → {} | {} ({:.0}%)\n",
@@ -1977,7 +2048,7 @@ mod tests {
     #[test]
     fn test_organize_preview_shows_classification_explanations() {
         use crate::agent::{
-            ProposedOperation, Recommendation, RecommendationStrategy, ValidationResult,
+            Recommendation, RecommendationStrategy, ValidationResult,
             ValidationSummary,
         };
         use crate::classification::{ClassificationDecision, ClassificationResult};
@@ -2066,6 +2137,7 @@ mod tests {
             schema_version: "3.0.0".to_string(),
             provider: Some("openai-compatible".to_string()),
             model: Some("gemini-3.6-flash".to_string()),
+            source_path: Some("test-file".to_string()),
         }];
 
         let preview = render_organize_preview(&plan, &validation, &recommendation, &analysis);
@@ -3160,6 +3232,222 @@ mod tests {
             }
             _ => panic!("expected Commands::Organize"),
         }
+    }
+
+    // Regression Test A: Evidence association with per-file identity
+    // Verifies that evidence comes from the same ClassificationResult/file identity,
+    // not from a shared destination.
+    #[test]
+    fn test_regression_evidence_association_per_file_identity() {
+        use crate::agent::{
+            Recommendation, RecommendationStrategy, ValidationResult,
+            ValidationSummary,
+        };
+        use crate::classification::{ClassificationDecision, ClassificationResult};
+
+        // Two different files targeting the SAME category.
+        // This proves destination-based matching is broken,
+        // and source_path-based identity is required.
+        let scope = PathBuf::from("/test/evidence_scope");
+        let plan = crate::agent::OperationPlan {
+            unresolved_proposals: Vec::new(),
+            id: "evidence-test".to_string(),
+            recommendation_id: "rec-ev".to_string(),
+            scope: scope.clone(),
+            operations: vec![
+                FileSystemOperation::Move {
+                    source: scope.join("A.mp4"),
+                    dest: scope.join("CategoryA").join("A.mp4"),
+                },
+                FileSystemOperation::Move {
+                    source: scope.join("B.mp4"),
+                    dest: scope.join("CategoryA").join("B.mp4"),
+                },
+            ],
+            estimated_impact: EstimatedImpact {
+                files_moved: 2,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 1,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(PlanValidationContext::default()),
+        };
+
+        let validation = ValidationResult {
+            plan_id: "evidence-test".to_string(),
+            scope: scope.clone(),
+            validated_operations: vec![],
+            summary: ValidationSummary::new(),
+            has_blocked: false,
+            has_conflicts: false,
+            has_invalid: false,
+            has_warnings: false,
+            executable_operations: 2,
+        };
+
+        let recommendation = Recommendation {
+            id: "rec-ev".to_string(),
+            strategy: RecommendationStrategy::CategoryBased,
+            strategy_info: None,
+            rationale: "test".to_string(),
+            proposed_categories: vec![],
+            proposed_operations: vec![],
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            organization_proposal: None,
+            generated_at: 0,
+        };
+
+        // Two files with DIFFERENT evidence but SAME destination.
+        let mut analysis = minimal_analysis();
+        analysis.classification_results = vec![
+            ClassificationResult {
+                target_path: scope.clone(),
+                decision: ClassificationDecision::MoveExisting,
+                selected_candidate: Some(scope.join("CategoryA")),
+                proposed_category_name: Some("CategoryA".to_string()),
+                confidence: 0.95,
+                confidence_band: crate::classification::ConfidenceBand::High,
+                candidates_considered: 2,
+                supporting_evidence: vec![crate::classification::SupportingEvidence {
+                    evidence_type: "LLMClassification".to_string(),
+                    description: "LLM classified 'A.mp4' as 'CategoryA'".to_string(),
+                    score: 0.95,
+                }],
+                alternatives: vec![],
+                uncertainty: vec![],
+                classification_reason: Some("A.mp4 is media".to_string()),
+                warnings: vec![],
+                classified_at: 0,
+                schema_version: "3.0.0".to_string(),
+                provider: Some("test".to_string()),
+                model: Some("gemini-3.6-flash".to_string()),
+                source_path: Some("A.mp4".to_string()),
+            },
+            ClassificationResult {
+                target_path: scope.clone(),
+                decision: ClassificationDecision::MoveExisting,
+                selected_candidate: Some(scope.join("CategoryA")),
+                proposed_category_name: Some("CategoryA".to_string()),
+                confidence: 0.88,
+                confidence_band: crate::classification::ConfidenceBand::Medium,
+                candidates_considered: 2,
+                supporting_evidence: vec![crate::classification::SupportingEvidence {
+                    evidence_type: "LLMClassification".to_string(),
+                    description: "LLM classified 'B.mp4' as 'CategoryA'".to_string(),
+                    score: 0.88,
+                }],
+                alternatives: vec![],
+                uncertainty: vec![],
+                classification_reason: Some("B.mp4 is media".to_string()),
+                warnings: vec![],
+                classified_at: 0,
+                schema_version: "3.0.0".to_string(),
+                provider: Some("test".to_string()),
+                model: Some("gemini-3.6-flash".to_string()),
+                source_path: Some("B.mp4".to_string()),
+            },
+        ];
+
+        let preview = render_organize_preview(&plan, &validation, &recommendation, &analysis);
+
+        // Verify A's explanation contains A's evidence (not B's).
+        let preview_str = preview;
+        assert!(
+            preview_str.contains("A.mp4"),
+            "A.mp4 should appear in explanations"
+        );
+        assert!(
+            preview_str.contains("LLM classified 'A.mp4'"),
+            "evidence for A.mp4 must contain 'A.mp4'"
+        );
+        assert!(
+            preview_str.contains("LLM classified 'B.mp4'"),
+            "evidence for B.mp4 must contain 'B.mp4'"
+        );
+
+        // Verify that A.mp4's line does NOT contain B.mp4's evidence description.
+        let a_line_pos = preview_str.find("A.mp4").unwrap();
+        let b_evidence = "LLM classified 'B.mp4'";
+        let b_line_pos = preview_str.find(b_evidence).unwrap();
+        // A's explanation line should contain A's evidence, not B's.
+        assert!(
+            a_line_pos < b_line_pos,
+            "A's explanation should come before B's evidence"
+        );
+    }
+
+    // Regression Test B: Aggregate AI suggested operations once per category.
+    // Multiple ClassificationResults targeting the same category should
+    // produce exactly ONE aggregate Move summary.
+    #[test]
+    fn test_regression_ai_suggested_operations_aggregated_once() {
+        use crate::agent::ProposedOperation;
+
+        let recommendation = crate::agent::Recommendation {
+            id: "rec-agg".to_string(),
+            strategy: crate::agent::RecommendationStrategy::CategoryBased,
+            strategy_info: None,
+            rationale: "test aggregation".to_string(),
+            proposed_categories: vec![],
+            // Three MoveCategory for same category (simulating per-file results).
+            proposed_operations: vec![
+                ProposedOperation::MoveCategory {
+                    strategy: "test".to_string(),
+                    content_type: "media".to_string(),
+                    file_count: 5,
+                    to_category: "CategoryA".to_string(),
+                },
+                ProposedOperation::MoveCategory {
+                    strategy: "test".to_string(),
+                    content_type: "other".to_string(),
+                    file_count: 3,
+                    to_category: "CategoryA".to_string(),
+                },
+                ProposedOperation::MoveCategory {
+                    strategy: "test".to_string(),
+                    content_type: "document".to_string(),
+                    file_count: 2,
+                    to_category: "CategoryA".to_string(),
+                },
+            ],
+            unresolved_questions: vec![],
+            confidence: 0.9,
+            constraint_checks: vec![],
+            constraint_violation: None,
+            warnings: vec![],
+            organization_proposal: None,
+            generated_at: 0,
+        };
+
+        let rendered = render_recommendation_summary(&recommendation, &minimal_analysis());
+
+        // Count aggregate Move entries for CategoryA.
+        let category_a_entries = rendered
+            .lines()
+            .filter(|line| line.contains("CategoryA"))
+            .filter(|line| line.contains("Move"))
+            .count();
+        assert_eq!(
+            category_a_entries, 1,
+            "AI Suggested Operations must aggregate by category exactly once. \
+             Got {} entries for CategoryA but expected 1.",
+            category_a_entries
+        );
+
+        // The total file count for CategoryA should be aggregated: 5 + 3 + 2 = 10.
+        assert!(
+            rendered.contains("Move 10 files to 'CategoryA'"),
+            "aggregate summary must show total count 10 (5+3+2) for CategoryA"
+        );
     }
 }
 
