@@ -1088,7 +1088,7 @@ fn do_organize(
         // Show current preview
         if final_plan.operations.is_empty() {
             let recommendation_preview =
-                render_recommendation_summary(&final_recommendation, &result.analysis);
+                render_recommendation_summary(&final_recommendation, &final_plan, &result.analysis);
             eprintln!("{}", recommendation_preview);
             eprintln!("Nothing to organize. The folder is already organized.");
             let json = serde_json::to_string_pretty(&final_plan)?;
@@ -1195,7 +1195,7 @@ fn do_organize(
                 // User quits, show nothing to organize
                 eprintln!("Operation cancelled by user.");
                 let recommendation_preview =
-                    render_recommendation_summary(&final_recommendation, &result.analysis);
+                    render_recommendation_summary(&final_recommendation, &final_plan, &result.analysis);
                 eprintln!("{}", recommendation_preview);
                 eprintln!("Nothing to organize.");
                 let json = serde_json::to_string_pretty(&final_plan)?;
@@ -1309,6 +1309,7 @@ fn build_refinement_provider() -> Result<Option<Arc<dyn LlmProvider>>> {
 
 fn render_recommendation_summary(
     recommendation: &crate::agent::Recommendation,
+    plan: &crate::agent::OperationPlan,
     _analysis: &crate::agent::TaskAnalysis,
 ) -> String {
     let mut output = String::new();
@@ -1372,29 +1373,20 @@ fn render_recommendation_summary(
 
     if !recommendation.proposed_operations.is_empty() {
         output.push_str("\n  AI Suggested Operations:\n");
-        let mut grouped_moves: std::collections::HashMap<String, u64> =
-            std::collections::HashMap::new();
-        for op in &recommendation.proposed_operations {
-            match op {
-                ProposedOperation::MoveCategory {
-                    strategy: _,
-                    content_type: _,
-                    file_count,
-                    to_category,
-                } => {
-                    let key = to_category.clone();
-                    *grouped_moves.entry(key).or_insert(0) += file_count;
-                }
-                _ => {
-                    output.push_str(&format!("    • {}\n", op.description()));
-                }
+        // Aggregate AI Suggested Operations from the ACTUAL file-level operations (plan.operations)
+        // rather than from the bulk recommendation operations, so file counts match reality.
+        let mut grouped_moves: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for op in &plan.operations {
+            if let crate::agent::FileSystemOperation::Move { source: _, dest } = op {
+                let category = dest
+                    .parent()
+                    .map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+                    .unwrap_or_else(|| dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                *grouped_moves.entry(category.clone()).or_insert(0) += 1;
             }
         }
-        for (category, total) in grouped_moves.iter() {
-            output.push_str(&format!(
-                "    • Move {} files to '{}'\n",
-                total, category
-            ));
+        for (category, total) in grouped_moves {
+            output.push_str(&format!("    • Move {} files to '{}'\n", total, category));
         }
     }
 
@@ -1484,7 +1476,7 @@ fn render_organize_preview(
 
     let mut output = String::new();
 
-    output.push_str(&render_recommendation_summary(recommendation, analysis));
+    output.push_str(&render_recommendation_summary(recommendation, plan, analysis));
     output.push('\n');
 
     if let Some(cr) = analysis.classification_results.first() {
@@ -2651,16 +2643,35 @@ mod tests {
             rationale: "test".to_string(),
             proposed_categories: vec![],
             proposed_operations: vec![],
-            organization_proposal: None,
             unresolved_questions: vec![],
             confidence: 0.9,
             constraint_checks: vec![],
             constraint_violation: None,
             warnings: vec![],
+            organization_proposal: None,
             generated_at: 0,
         };
 
-        let rendered = render_recommendation_summary(&recommendation, &minimal_analysis());
+        let dummy_plan = crate::agent::OperationPlan {
+            unresolved_proposals: vec![],
+            id: "test".to_string(),
+            recommendation_id: "test".to_string(),
+            scope: PathBuf::new(),
+            operations: vec![],
+            estimated_impact: crate::agent::EstimatedImpact {
+                files_moved: 0,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 0,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(crate::agent::PlanValidationContext::default()),
+        };
+        let rendered = render_recommendation_summary(&recommendation, &dummy_plan, &minimal_analysis());
         assert!(!rendered.contains("Organization Proposal"));
         assert!(rendered.contains("=== AI Organization Recommendation ==="));
     }
@@ -2683,7 +2694,26 @@ mod tests {
             generated_at: 0,
         };
 
-        let rendered = render_recommendation_summary(&recommendation, &minimal_analysis());
+        let dummy_plan = crate::agent::OperationPlan {
+            unresolved_proposals: vec![],
+            id: "test".to_string(),
+            recommendation_id: "test".to_string(),
+            scope: scope.clone(),
+            operations: vec![],
+            estimated_impact: crate::agent::EstimatedImpact {
+                files_moved: 0,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 0,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(crate::agent::PlanValidationContext::default()),
+        };
+        let rendered = render_recommendation_summary(&recommendation, &dummy_plan, &minimal_analysis());
         assert!(rendered.contains("Organization Proposal"));
         assert!(rendered.contains("Strategy: By author"));
         assert!(rendered.contains("Author A"));
@@ -3428,7 +3458,26 @@ mod tests {
             generated_at: 0,
         };
 
-        let rendered = render_recommendation_summary(&recommendation, &minimal_analysis());
+        let dummy_plan_regression = crate::agent::OperationPlan {
+            unresolved_proposals: vec![],
+            id: "test".to_string(),
+            recommendation_id: "test".to_string(),
+            scope: scope.clone(),
+            operations: vec![],
+            estimated_impact: crate::agent::EstimatedImpact {
+                files_moved: 0,
+                dirs_created: 0,
+                files_deleted: 0,
+                dirs_affected: 0,
+                total_bytes: 0,
+            },
+            validation_warnings: vec![],
+            has_conflicts: false,
+            dry_run: false,
+            created_at: 0,
+            validation_context: Some(crate::agent::PlanValidationContext::default()),
+        };
+        let rendered = render_recommendation_summary(&recommendation, &dummy_plan_regression, &minimal_analysis());
 
         // Count aggregate Move entries for CategoryA.
         let category_a_entries = rendered

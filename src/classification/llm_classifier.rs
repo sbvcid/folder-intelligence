@@ -258,7 +258,27 @@ impl LlmClassifier {
             .chat(&messages)
             .map_err(|e| LlmClassificationError::ProviderError(e.to_string()))?;
 
+        // Temporary diagnostic logging (not exposing API keys or auth headers)
+        println!("DEBUG: LLM request sent (provider: {}, model: openrouter/free)", self.name());
+        println!("DEBUG: LLM response received (content length: {})", response.len());
+        let preview_len = std::cmp::min(2000, response.len());
+        println!("DEBUG: LLM response preview (first {} chars): {}", preview_len, &response[..preview_len]);
+        if response.trim().is_empty() {
+            println!("DEBUG: WARNING - response body is empty");
+        } else if response.trim().starts_with("```") {
+            println!("DEBUG: WARNING - response appears to be a markdown code block (fence detected)");
+        } else if response.trim().starts_with("{") || response.trim().starts_with("[") {
+            println!("DEBUG: Response starts with JSON-like structure");
+        } else {
+            println!("DEBUG: Response does not start with JSON structure (starts with: {})", 
+                &response.chars().take(40).collect::<String>());
+        }
+
         let output: LlmClassificationOutput = serde_json::from_str(&response).map_err(|e| {
+            println!("DEBUG: JSON parse error details: {}", e);
+            println!("DEBUG: Raw response causing parse error (length {}): {}", 
+                response.len(), 
+                &response[..std::cmp::min(500, response.len())]);
             LlmClassificationError::MalformedJson(format!(
                 "Failed to parse LLM response as JSON object: {}",
                 e

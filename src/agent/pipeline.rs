@@ -2777,4 +2777,53 @@ mod tests {
             "source file must still exist after dry-run"
         );
     }
+
+    #[test]
+    fn test_llm_unobserved_filename_becomes_leave_unclassified() {
+        let dir = tempdir().unwrap();
+        let scope = create_llm_test_scope(&dir);
+
+        // LLM returns a filename that does NOT exist in observations
+        let pipeline = pipeline_with_llm(
+            &scope,
+            r#"{"classifications":[{"path":"nonexistent.pdf","category":"Documents","confidence":0.9}]}"#,
+        );
+
+        let intent = pipeline
+            .parse_intent("Organize this folder by category")
+            .unwrap();
+        let analysis = pipeline.analyze(&intent).unwrap();
+        let recommendation = pipeline.recommend(&intent, &analysis).unwrap();
+
+        // Pipeline must complete successfully (no error)
+        assert!(
+            analysis.classification_results.len() == 1,
+            "should produce exactly one classification result"
+        );
+
+        let classification = analysis.classification_results.first().unwrap();
+        assert_eq!(
+            classification.decision,
+            ClassificationDecision::LeaveUnclassified,
+            "unobserved filename must become LeaveUnclassified"
+        );
+        assert!(
+            classification.selected_candidate.is_none(),
+            "unobserved filename must not select any candidate"
+        );
+
+        // No mutation operations should be produced
+        let has_mutation = recommendation.proposed_operations.iter().any(|op| {
+            matches!(
+                op,
+                ProposedOperation::MoveCategory { .. }
+                    | ProposedOperation::CreateCategory { .. }
+                    | ProposedOperation::ArchiveFiles { .. }
+            )
+        });
+        assert!(
+            !has_mutation,
+            "unobserved filename must produce zero mutation operations"
+        );
+    }
 }
