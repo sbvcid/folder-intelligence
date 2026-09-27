@@ -178,6 +178,7 @@ mod tests {
             base_url: None,
             api_key_env: "FOLDER_INTELLIGENCE_API_KEY".to_string(),
             timeout_seconds: 60,
+            api_key: None,
         };
         let result = create_provider(&config);
         match result {

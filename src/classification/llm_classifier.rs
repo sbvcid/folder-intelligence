@@ -222,6 +222,13 @@ pub enum LlmClassificationError {
 
     #[error("Invalid path: {0}")]
     InvalidPath(String),
+
+    #[error(
+        "No observations available for LLM classification: the target scope produced no \
+         representative filenames to classify (0 observations, 0 allowed categories). \
+         The scope may be empty, or its files may have been excluded from the scan sample."
+    )]
+    NoObservations,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +257,10 @@ impl LlmClassifier {
         target_path: &Path,
         allowed_category_paths: &[(String, PathBuf)],
     ) -> Result<ClassificationWithStrategy, LlmClassificationError> {
+        if request.observations.is_empty() {
+            return Err(LlmClassificationError::NoObservations);
+        }
+
         let prompt = request.prompt();
         let messages = vec![ChatMessage::user(prompt)];
 
@@ -259,7 +270,8 @@ impl LlmClassifier {
             .map_err(|e| LlmClassificationError::ProviderError(e.to_string()))?;
 
         // Temporary diagnostic logging (not exposing API keys or auth headers)
-        println!("DEBUG: LLM request sent (provider: {}, model: openrouter/free)", self.name());
+        println!("DEBUG: LLM request sent (provider: {})", self.name());
+        println!("DEBUG: LLM request observation count: {}", request.observations.len());
         println!("DEBUG: LLM response received (content length: {})", response.len());
         let preview_len = std::cmp::min(2000, response.len());
         println!("DEBUG: LLM response preview (first {} chars): {}", preview_len, &response[..preview_len]);
@@ -626,6 +638,68 @@ mod tests {
                 file_count: 0,
             },
         ]
+    }
+
+    #[test]
+    fn test_empty_observations_short_circuits_without_llm_request() {
+        #[derive(Debug)]
+        struct CountingProvider {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        impl LlmProvider for CountingProvider {
+            fn chat(&self, _messages: &[ChatMessage]) -> Result<String, LlmError> {
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(r#"{"classifications":[]}"#.to_string())
+            }
+
+            fn name(&self) -> &str {
+                "counting-test"
+            }
+        }
+
+        let provider = Arc::new(CountingProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let classifier = LlmClassifier::new(provider.clone());
+
+        let request = LlmClassificationRequest {
+            observations: Vec::new(),
+            allowed_categories: vec!["Documents".to_string()],
+            instruction: None,
+        };
+
+        let result = classifier.classify(
+            &request,
+            &PathBuf::from("/test/scope"),
+            &[(
+                "Documents".to_string(),
+                PathBuf::from("/test/scope/Documents"),
+            )],
+        );
+
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "provider must not be called when observations are empty"
+        );
+
+        let err = result.expect_err("empty observations must return an error");
+        assert!(
+            matches!(err, LlmClassificationError::NoObservations),
+            "expected NoObservations, got: {err:?}"
+        );
+
+        let message = err.to_string();
+        assert!(
+            message.contains("No observations"),
+            "error should be diagnosable, got: {message}"
+        );
+        assert!(
+            message.contains("representative filenames"),
+            "error should explain why observations are empty, got: {message}"
+        );
     }
 
     #[test]
