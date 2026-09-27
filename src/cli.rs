@@ -2108,29 +2108,77 @@ mod tests {
         };
 
         let mut analysis = minimal_analysis();
-        analysis.classification_results = vec![ClassificationResult {
-            target_path: scope.clone(),
-            decision: ClassificationDecision::MoveExisting,
-            selected_candidate: Some(scope.join("Media")),
-            proposed_category_name: Some("Media".to_string()),
-            confidence: 0.95,
-            confidence_band: crate::classification::ConfidenceBand::High,
-            candidates_considered: 2,
-            supporting_evidence: vec![crate::classification::SupportingEvidence {
-                evidence_type: "LLMClassification".to_string(),
-                description: "LLM classified as 'Media'".to_string(),
-                score: 0.95,
-            }],
-            alternatives: vec![],
-            uncertainty: vec![],
-            classification_reason: Some("Files classified as media content.".to_string()),
-            warnings: vec![],
-            classified_at: 0,
-            schema_version: "3.0.0".to_string(),
-            provider: Some("openai-compatible".to_string()),
-            model: Some("gemini-3.6-flash".to_string()),
-            source_path: Some("test-file".to_string()),
-        }];
+        analysis.classification_results = vec![
+            ClassificationResult {
+                target_path: scope.clone(),
+                decision: ClassificationDecision::MoveExisting,
+                selected_candidate: Some(scope.join("Media")),
+                proposed_category_name: Some("Media".to_string()),
+                confidence: 0.95,
+                confidence_band: crate::classification::ConfidenceBand::High,
+                candidates_considered: 2,
+                supporting_evidence: vec![crate::classification::SupportingEvidence {
+                    evidence_type: "LLMClassification".to_string(),
+                    description: "LLM classified as 'Media'".to_string(),
+                    score: 0.95,
+                }],
+                alternatives: vec![],
+                uncertainty: vec![],
+                classification_reason: Some("Files classified as media content.".to_string()),
+                warnings: vec![],
+                classified_at: 0,
+                schema_version: "3.0.0".to_string(),
+                provider: Some("openai-compatible".to_string()),
+                model: Some("gemini-3.6-flash".to_string()),
+                source_path: Some("doc.pdf".to_string()),
+            },
+            ClassificationResult {
+                target_path: scope.clone(),
+                decision: ClassificationDecision::MoveExisting,
+                selected_candidate: Some(scope.join("Media")),
+                proposed_category_name: Some("Media".to_string()),
+                confidence: 0.95,
+                confidence_band: crate::classification::ConfidenceBand::High,
+                candidates_considered: 2,
+                supporting_evidence: vec![crate::classification::SupportingEvidence {
+                    evidence_type: "LLMClassification".to_string(),
+                    description: "LLM classified as 'Media'".to_string(),
+                    score: 0.95,
+                }],
+                alternatives: vec![],
+                uncertainty: vec![],
+                classification_reason: Some("Files classified as media content.".to_string()),
+                warnings: vec![],
+                classified_at: 0,
+                schema_version: "3.0.0".to_string(),
+                provider: Some("openai-compatible".to_string()),
+                model: Some("gemini-3.6-flash".to_string()),
+                source_path: Some("notes.txt".to_string()),
+            },
+            ClassificationResult {
+                target_path: scope.clone(),
+                decision: ClassificationDecision::MoveExisting,
+                selected_candidate: Some(scope.join("Media")),
+                proposed_category_name: Some("Media".to_string()),
+                confidence: 0.95,
+                confidence_band: crate::classification::ConfidenceBand::High,
+                candidates_considered: 2,
+                supporting_evidence: vec![crate::classification::SupportingEvidence {
+                    evidence_type: "LLMClassification".to_string(),
+                    description: "LLM classified as 'Media'".to_string(),
+                    score: 0.95,
+                }],
+                alternatives: vec![],
+                uncertainty: vec![],
+                classification_reason: Some("Files classified as media content.".to_string()),
+                warnings: vec![],
+                classified_at: 0,
+                schema_version: "3.0.0".to_string(),
+                provider: Some("openai-compatible".to_string()),
+                model: Some("gemini-3.6-flash".to_string()),
+                source_path: Some("vacation.jpg".to_string()),
+            },
+        ];
 
         let preview = render_organize_preview(&plan, &validation, &recommendation, &analysis);
 
@@ -2694,6 +2742,7 @@ mod tests {
             generated_at: 0,
         };
 
+        let scope = PathBuf::new();
         let dummy_plan = crate::agent::OperationPlan {
             unresolved_proposals: vec![],
             id: "test".to_string(),
@@ -3458,12 +3507,21 @@ mod tests {
             generated_at: 0,
         };
 
+        let scope_reg = PathBuf::new();
+        let category_a_dir = scope_reg.join("CategoryA");
+        let mut plan_ops = Vec::new();
+        for i in 0..10 {
+            plan_ops.push(crate::agent::FileSystemOperation::Move {
+                source: scope_reg.join(format!("file_{}.txt", i)),
+                dest: category_a_dir.join(format!("file_{}.txt", i)),
+            });
+        }
         let dummy_plan_regression = crate::agent::OperationPlan {
             unresolved_proposals: vec![],
             id: "test".to_string(),
             recommendation_id: "test".to_string(),
-            scope: scope.clone(),
-            operations: vec![],
+            scope: scope_reg.clone(),
+            operations: plan_ops,
             estimated_impact: crate::agent::EstimatedImpact {
                 files_moved: 0,
                 dirs_created: 0,
