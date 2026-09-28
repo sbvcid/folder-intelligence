@@ -1,3 +1,11 @@
+## Archived
+
+This project is archived and is no longer actively developed.
+
+The project originally explored building a standalone filesystem intelligence and organization engine. After evaluating the approach against current AI agent and MCP tooling, the standalone implementation was no longer necessary for its original goal.
+
+The repository is preserved for historical reference and future experimentation.
+
 # folder-intelligence
 
 **Folder Intelligence 1.0 = File-level AI Organizer**
